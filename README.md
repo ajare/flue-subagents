@@ -33,6 +33,9 @@ from the target repository, not necessarily the agent's installation directory.
 
 ## Run
 
+See the [prompt examples guide](docs/prompt-examples.md) for repository questions,
+bug fixes, features, refactors, reviews, commits, and clarification workflows.
+
 ```sh
 flue-agent --repo /path/to/trusted/repo "Fix the parser and add regression tests"
 printf '%s' 'Explain the parser architecture' | flue-agent --repo /path/to/repo
