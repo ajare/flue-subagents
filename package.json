@@ -4,13 +4,18 @@
     "private": true,
     "description": "An autonomous coding agent orchestrated with Flue subagents",
     "type": "module",
+    "bin": {
+        "flue-agent": "./src/cli.ts"
+    },
     "engines": {
         "node": ">=22.19.0"
     },
     "scripts": {
         "build": "tsc --noEmit",
         "typecheck": "tsc --noEmit",
-        "test": "node --test",
+        "test": "node --test --test-timeout=30000 tests/*.test.ts",
+        "test:coverage": "node --test --test-timeout=30000 --experimental-test-coverage tests/*.test.ts",
+        "probe:flue": "node src/prototypes/flue-integration.ts",
         "lint": "biome lint .",
         "format": "biome format --write .",
         "format:check": "biome format ."
@@ -21,7 +26,8 @@
     "dependencies": {
         "@earendil-works/pi-ai": "^0.83.0",
         "@flue/cli": "^2.0.3",
-        "@flue/runtime": "^2.0.3"
+        "@flue/runtime": "^2.0.3",
+        "valibot": "^1.5.0"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.5.14",

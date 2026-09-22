@@ -1,6 +1,6 @@
 # FLUE-005 — Build the `flue-agent` CLI shell
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** M
 - **Depends on:** FLUE-003, FLUE-004
 
@@ -17,6 +17,13 @@ Provide the primary one-shot command-line interface for submitting an engineerin
 - Reject missing or empty prompts.
 - Resolve the repository to a canonical absolute path.
 - Add help, version, and initial top-level error handling.
+
+## Implementation
+
+The executable shell is implemented in `src/cli.ts` and registered as the
+`flue-agent` package binary. Parsing, request construction, and execution are
+separate and injectable so argument and stdin behavior can be tested without a
+model server. See the [CLI guide](../cli.md).
 
 ## Acceptance criteria
 

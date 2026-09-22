@@ -1,6 +1,6 @@
 # FLUE-011 — Implement role-specific capability boundaries
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** L
 - **Depends on:** FLUE-002, FLUE-003, FLUE-008
 
@@ -25,3 +25,26 @@ Expose only the repository capabilities each subagent role needs.
 - Only one implementer can execute mutating work at a time.
 - Timed-out and cancelled commands terminate their process groups.
 - Agent commands operate against the temporary worktree rather than the original checkout.
+
+## Implementation notes
+
+- The sandbox-provided tool set contains only `read`, `grep`, and `glob`;
+  explorer and planner mount the structured, allowlisted `inspect_repository`
+  Git tool, while only implementer mounts file mutation and unrestricted
+  development-command tools.
+- `MutationCoordinator` serializes all implementer writes, replacements, and
+  commands, including concurrent tool calls from separate task sessions.
+- Tool cancellation signals are forwarded to sandbox execution. Flue's local
+  adapter enforces deadlines and kills POSIX process groups on timeout or
+  cancellation; the workspace adapter caps every requested timeout at the run
+  configuration.
+- `workspaceLocal` confines ordinary paths to the temporary worktree and keeps
+  the restricted environment established by configuration. Its command wrapper
+  writes timestamped NDJSON audit records with command, cwd, duration, exit,
+  stdout, stderr, and outcome through `FileCommandAuditLog`.
+- Reviewer command capability is defined separately in
+  `src/tools/review-tools.ts` for the reviewer introduced by FLUE-012; it adds
+  validation-command access but no file mutation API.
+- Covered by `tests/role-capabilities.test.ts`, including process-group
+  cancellation, timeout capping, auditing, the inspection allowlist, and
+  mutation serialization.

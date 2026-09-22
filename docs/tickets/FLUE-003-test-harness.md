@@ -1,6 +1,6 @@
 # FLUE-003 — Establish the automated test harness
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** M
 - **Depends on:** FLUE-001, FLUE-002
 
@@ -16,6 +16,12 @@ Provide deterministic test infrastructure for repository operations, CLI behavio
 - Add helpers for CLI input, stdout, stderr, signals, and exit codes.
 - Ensure normal tests do not require a running local model server.
 - Configure coverage reporting if appropriate.
+
+## Implementation
+
+Uses Node's built-in test runner with offline Pi faux-provider/embedded Flue
+adapters, disposable Git fixtures, subprocess CLI helpers, and a Node 22/24 CI
+matrix. See [testing guide](../testing.md) for commands and fixture APIs.
 
 ## Acceptance criteria
 

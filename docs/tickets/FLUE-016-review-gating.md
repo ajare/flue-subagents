@@ -1,6 +1,6 @@
 # FLUE-016 — Implement review, repair, and completion gating
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** XL
 - **Depends on:** FLUE-009, FLUE-013, FLUE-014, FLUE-015
 
@@ -18,6 +18,13 @@ Prevent publication and successful completion until the final patch has independ
 - Trigger implementer repair followed by fresh review.
 - Enforce the two-repair-cycle limit.
 - Distinguish acceptable limitations from inability to verify central behavior.
+
+## Implementation
+
+- Runtime reviewer snapshots and review/implementer exclusion, conservative
+  revision-bound ledger aggregation, completion and publication guards.
+- Bounded CLI review/repair continuation and explicit optional-validation warnings.
+- See [review gating](../review-gating.md) and `tests/review-gating.test.ts`.
 
 ## Acceptance criteria
 

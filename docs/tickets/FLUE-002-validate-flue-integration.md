@@ -1,6 +1,6 @@
 # FLUE-002 — Validate Flue orchestration integration
 
-- **Status:** Proposed
+- **Status:** Completed
 - **Difficulty:** L
 - **Depends on:** FLUE-001
 
@@ -24,3 +24,9 @@ Prove that Flue exposes the programmatic orchestration and observability capabil
 - Cancellation and continuation behavior are documented from observed results.
 - Any missing framework capability has a documented, feasible alternative.
 - The architecture decision is recorded for dependent tickets.
+
+## Implementation
+
+- Executable integration probe: [`src/prototypes/flue-integration.ts`](../../src/prototypes/flue-integration.ts)
+- Architecture decision and observed limitations: [`docs/architecture/0001-flue-runtime-integration.md`](../architecture/0001-flue-runtime-integration.md)
+- Run with `npm run probe:flue`; no external model server is required.

@@ -1,6 +1,6 @@
 # FLUE-004 — Implement configuration and model-provider resolution
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** M
 - **Depends on:** FLUE-002, FLUE-003
 
@@ -17,6 +17,15 @@ Resolve and validate runtime configuration without requiring orchestration detai
 - Preserve Flue's restricted environment-variable allowlist.
 - Check model connectivity before creating a worktree.
 - Report the effective non-secret configuration for diagnostics.
+
+## Implementation
+
+Configuration resolution and validation live in `src/config.ts`; the configured
+OpenAI-compatible provider and pre-workspace connectivity probe live in
+`src/model-provider.ts`. The orchestrator factory binds the selected model,
+reasoning effort, working directory, and restricted command environment to a
+run. See the [configuration guide](../configuration.md) for sources, options,
+defaults, and security behavior.
 
 ## Acceptance criteria
 

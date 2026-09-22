@@ -7,9 +7,13 @@ import {
 
 import { local } from '@flue/runtime/node';
 
-export function readOnlyLocal(cwd: string = process.cwd()): SandboxFactory {
+export function readOnlyLocal(
+    cwd: string = process.cwd(),
+    env?: Record<string, string | undefined>,
+): SandboxFactory {
     const factory = local({
         cwd,
+        env,
     });
 
     return {

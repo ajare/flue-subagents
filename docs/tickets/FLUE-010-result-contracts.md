@@ -1,6 +1,6 @@
 # FLUE-010 — Define structured subagent result contracts
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** M
 - **Depends on:** FLUE-002, FLUE-003
 

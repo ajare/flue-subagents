@@ -11,5 +11,5 @@
         "noEmit": true,
         "skipLibCheck": true
     },
-    "include": ["src/**/*.ts", "flue.config.ts"]
+    "include": ["src/**/*.ts", "tests/**/*.ts", "flue.config.ts"]
 }

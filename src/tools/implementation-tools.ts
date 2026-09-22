@@ -1,5 +1,6 @@
 import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
+import { repositoryMutationCoordinator } from '../mutation-coordinator.ts';
 
 export const writeFile = defineTool({
     name: 'implement_write_file',
@@ -14,15 +15,17 @@ export const writeFile = defineTool({
 
     harness: true,
 
-    async run({ harness, data }) {
-        await harness.sandbox.writeFile(data.path, data.content);
+    async run({ harness, data, signal }) {
+        return repositoryMutationCoordinator.run(signal, async () => {
+            await harness.sandbox.writeFile(data.path, data.content);
 
-        return {
-            output: {
-                success: true,
-                path: data.path,
-            },
-        };
+            return {
+                output: {
+                    success: true,
+                    path: data.path,
+                },
+            };
+        });
     },
 });
 
@@ -40,31 +43,30 @@ export const replaceText = defineTool({
 
     harness: true,
 
-    async run({ harness, data }) {
-        const original = await harness.sandbox.readFile(data.path);
+    async run({ harness, data, signal }) {
+        return repositoryMutationCoordinator.run(signal, async () => {
+            const original = await harness.sandbox.readFile(data.path);
+            const count = original.split(data.oldText).length - 1;
 
-        const count = original.split(data.oldText).length - 1;
+            if (count === 0) throw new Error(`Text not found in ${data.path}`);
+            if (count > 1) {
+                throw new Error(
+                    `Text occurs ${count} times in ${data.path}; replacement must be unambiguous`,
+                );
+            }
 
-        if (count === 0) {
-            throw new Error(`Text not found in ${data.path}`);
-        }
-
-        if (count > 1) {
-            throw new Error(
-                `Text occurs ${count} times in ${data.path}; replacement must be unambiguous`,
+            await harness.sandbox.writeFile(
+                data.path,
+                original.replace(data.oldText, data.newText),
             );
-        }
 
-        const changed = original.replace(data.oldText, data.newText);
-
-        await harness.sandbox.writeFile(data.path, changed);
-
-        return {
-            output: {
-                success: true,
-                path: data.path,
-            },
-        };
+            return {
+                output: {
+                    success: true,
+                    path: data.path,
+                },
+            };
+        });
     },
 });
 
@@ -80,15 +82,17 @@ export const runCommand = defineTool({
 
     harness: true,
 
-    async run({ harness, data }) {
-        const result = await harness.sandbox.exec(data.command);
+    async run({ harness, data, signal }) {
+        return repositoryMutationCoordinator.run(signal, async () => {
+            const result = await harness.sandbox.exec(data.command, { signal });
 
-        return {
-            output: {
-                exitCode: result.exitCode,
-                stdout: result.stdout,
-                stderr: result.stderr,
-            },
-        };
+            return {
+                output: {
+                    exitCode: result.exitCode,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                },
+            };
+        });
     },
 });
