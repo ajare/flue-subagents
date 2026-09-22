@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build and test output
+dist/
+coverage/
+*.tsbuildinfo
+
+# Flue and Vite generated state
+.flue-vite/
+.flue-vite.wrangler.jsonc
+.flue-state/
+.flue-worktrees/
+data/
+
+# Temporary workspaces
+.tmp/
+tmp/
+workspaces/
+
+# Local configuration and logs
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
