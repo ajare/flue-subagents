@@ -4,6 +4,7 @@ node_modules/
 # Build and test output
 dist/
 coverage/
+.eval-results/
 *.tsbuildinfo
 
 # Flue and Vite generated state

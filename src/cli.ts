@@ -389,6 +389,11 @@ export async function runCli(
 }
 
 export interface RunExecutionOptions {
+    /** Embedded callers/tests may replace only the model transport. */
+    modelTransport?: {
+        check: typeof checkModelConnectivity;
+        create: typeof createModelProvider;
+    };
     store?: RunStore;
     conversationId?: string;
     signal?: AbortSignal;
@@ -462,7 +467,10 @@ export async function executeRequest(
             (await workspaces.create(run.id, request.repositoryState));
         if (!existing)
             await patches.initialize(run.id, request.repositoryState);
-        await checkModelConnectivity(request.configuration, { signal });
+        await (options.modelTransport?.check ?? checkModelConnectivity)(
+            request.configuration,
+            { signal },
+        );
         const commandAudit = new FileCommandAuditLog(run.locations.auditLog);
         const orchestrator = createOrchestrator({
             configuration: request.configuration,
@@ -500,7 +508,11 @@ export async function executeRequest(
         const runtime = await start({
             db: sqlite(join(store.runDirectory(run.id), 'conversation.sqlite')),
             agents: [{ agent: orchestrator, name: 'flue-agent-orchestrator' }],
-            providers: [createModelProvider(request.configuration)],
+            providers: [
+                (options.modelTransport?.create ?? createModelProvider)(
+                    request.configuration,
+                ),
+            ],
         });
 
         let output: string;

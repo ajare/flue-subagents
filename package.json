@@ -14,6 +14,8 @@
         "build": "tsc --noEmit",
         "typecheck": "tsc --noEmit",
         "test": "node --test --test-timeout=30000 tests/*.test.ts",
+        "test:e2e": "node --test --test-timeout=60000 tests/acceptance.test.ts",
+        "test:eval": "node --test --test-concurrency=1 --test-timeout=1200000 tests/evals/*.test.ts",
         "test:coverage": "node --test --test-timeout=30000 --experimental-test-coverage tests/*.test.ts",
         "probe:flue": "node src/prototypes/flue-integration.ts",
         "lint": "biome lint .",
