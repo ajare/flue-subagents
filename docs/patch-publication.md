@@ -35,9 +35,10 @@ but never transferred. Ignored generated files are not revision content.
 
 A supplied revision hash alone is **not** approval: publication also requires
 current, independent ledger review evidence from every reviewer of that revision.
-The CLI gates completion on review, records revisions with an empty new-file
-manifest, and retains its workspace; it does not automatically publish.
-See [review gating](review-gating.md). Commit handling belongs to FLUE-017.
+The CLI gates completion on review and records revisions with an empty new-file
+manifest. A successfully reviewed mutation run publishes its approved revision.
+It leaves that publication uncommitted unless the original prompt directly asks
+for a commit or `--commit` is supplied. See [review gating](review-gating.md).
 
 ## Safety and recovery
 
@@ -53,6 +54,13 @@ original HEAD/branch/index are checked afterwards. Checkout writes use per-file
 atomic replacement. An undo journal is persisted before writes, and ordinary
 failures restore original files, modes, symlinks and newly created directories.
 The workspace is removed only after successful publication.
+
+Commit creation uses an isolated temporary index built from the starting HEAD,
+so only approved paths enter the commit and unrelated user staging is preserved.
+Git hooks run normally. The resulting tree, unchanged reviewed source, parent,
+and HEAD are revalidated; rejection or mutation blocks completion and restores
+the prior HEAD. An approved path containing pre-existing dirty content is not
+committed because that would incorporate content outside the approved delta.
 
 After process interruption, stop all writers, verify no publisher is still active,
 remove a stale `flue-publication.lock` if present, then call

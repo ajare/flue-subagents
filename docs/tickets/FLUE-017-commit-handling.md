@@ -1,6 +1,6 @@
 # FLUE-017 — Implement explicit commit handling
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** M
 - **Depends on:** FLUE-009, FLUE-016
 
@@ -18,6 +18,16 @@ Create a commit only when explicitly requested, after the exact approved patch h
 - Generate a commit message unless the prompt supplies one.
 - Run commit hooks normally.
 - Revalidate hook-modified output or return `blocked`.
+
+## Implementation
+
+- `src/commit-handling.ts` publishes the exact approved revision before optional
+  commit creation, uses a temporary index to isolate the approved tree, runs Git
+  hooks normally, and verifies both the resulting tree and hook-visible source.
+- Commit authority is captured only from a direct prompt instruction or
+  `--commit`; absent authority leaves the published patch uncommitted.
+- Hook rejection or mutation returns a blocked result and restores the prior
+  HEAD without bypassing hooks. See `tests/commit-handling.test.ts`.
 
 ## Acceptance criteria
 

@@ -128,6 +128,22 @@ test('dirty repositories are rejected before execution unless explicitly allowed
     assert.equal(calls, 1);
 });
 
+test('--commit records explicit commit authority independently of prompt wording', async (t) => {
+    const fixture = await createGitFixture(t);
+    const requests: ExecutionRequest[] = [];
+    const execute = async (request: ExecutionRequest) => {
+        requests.push(request);
+        return undefined;
+    };
+    assert.equal(
+        await runCli(['--commit', '--repo', fixture.path, 'update docs'], {
+            execute,
+        }),
+        0,
+    );
+    assert.deepEqual(requests[0]?.commitRequest, { requested: true });
+});
+
 test('help, version and argument failures use conventional streams and statuses', async () => {
     const stdout = output();
     const stderr = output();

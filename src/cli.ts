@@ -10,6 +10,11 @@ import { start } from '@flue/runtime/node';
 import { createOrchestrator } from './agents/orchestrator.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
 import {
+    CommitManager,
+    commitRequestFromPrompt,
+    type CommitRequest,
+} from './commit-handling.ts';
+import {
     type AgentConfiguration,
     resolveConfiguration,
     restrictedAgentEnvironment,
@@ -41,6 +46,8 @@ export interface ExecutionRequest {
     repository: string;
     configuration: AgentConfiguration;
     repositoryState: GitPreflightResult;
+    /** Captured from the original user input, never inferred from agent output. */
+    commitRequest?: CommitRequest;
 }
 
 export type ExecuteRequest = (
@@ -71,17 +78,19 @@ interface ParsedArguments {
     repo: string;
     prompt?: string;
     allowDirty: boolean;
+    commit: boolean;
 }
 
 export const HELP = `Usage:
-  flue-agent [--repo <path>] [--allow-dirty] "<prompt>"
-  printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty]
+  flue-agent [--repo <path>] [--allow-dirty] [--commit] "<prompt>"
+  printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty] [--commit]
 
 Submit one engineering objective for autonomous execution.
 
 Options:
   --repo <path>  Repository to operate on (default: current directory)
   --allow-dirty  Permit and fingerprint staged, unstaged, and untracked changes
+  --commit       Commit the approved published patch (hooks run normally)
   -h, --help     Show this help
   -v, --version  Show the package version
 
@@ -97,6 +106,7 @@ export function parseCliArguments(
     let repo = cwd;
     let prompt: string | undefined;
     let allowDirty = false;
+    let commit = false;
     let positionalOnly = false;
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -106,16 +116,20 @@ export function parseCliArguments(
             continue;
         }
         if (!positionalOnly && (argument === '--help' || argument === '-h')) {
-            return { action: 'help', repo, allowDirty };
+            return { action: 'help', repo, allowDirty, commit };
         }
         if (
             !positionalOnly &&
             (argument === '--version' || argument === '-v')
         ) {
-            return { action: 'version', repo, allowDirty };
+            return { action: 'version', repo, allowDirty, commit };
         }
         if (!positionalOnly && argument === '--allow-dirty') {
             allowDirty = true;
+            continue;
+        }
+        if (!positionalOnly && argument === '--commit') {
+            commit = true;
             continue;
         }
         if (!positionalOnly && argument === '--repo') {
@@ -144,7 +158,7 @@ export function parseCliArguments(
         prompt = argument;
     }
 
-    return { action: 'execute', repo, prompt, allowDirty };
+    return { action: 'execute', repo, prompt, allowDirty, commit };
 }
 
 /**
@@ -156,6 +170,7 @@ export async function createExecutionRequest(options: {
     prompt: string;
     env?: NodeJS.ProcessEnv;
     allowDirty?: boolean;
+    commit?: boolean;
 }): Promise<ExecutionRequest> {
     const prompt = options.prompt.trim();
     if (prompt === '') {
@@ -187,7 +202,13 @@ export async function createExecutionRequest(options: {
         cwd: repository,
         env: options.env,
     });
-    return { prompt, repository, configuration, repositoryState };
+    return {
+        prompt,
+        repository,
+        configuration,
+        repositoryState,
+        commitRequest: commitRequestFromPrompt(prompt, options.commit),
+    };
 }
 
 /** Run the CLI with injectable streams and execution for deterministic tests. */
@@ -222,6 +243,7 @@ export async function runCli(
             prompt: input,
             env: dependencies.env,
             allowDirty: parsed.allowDirty,
+            commit: parsed.commit,
         });
         const output = await (dependencies.execute ?? executeRequest)(request);
         if (output !== undefined && output !== '') stdout.write(`${output}\n`);
@@ -360,7 +382,32 @@ export async function executeRequest(
         const latest = await patches.latest(run.id);
         await patches.capture(run.id, latest?.approvedNewFiles);
         await workspaces.finish(run.id, result.status);
-        return formatOrchestratorResult(result);
+        let formatted = formatOrchestratorResult(result);
+        const events = (await store.read(run.id)).ledger;
+        if (result.status === 'completed' && isMutationRun(events)) {
+            const approved = await patches.latest(run.id);
+            if (!approved)
+                throw new Error('Completed run has no patch revision');
+            const finalization = await new CommitManager(
+                store,
+                process.env,
+                patches,
+            ).finalize(
+                run.id,
+                approved.revisionHash,
+                request.commitRequest ??
+                    commitRequestFromPrompt(request.prompt),
+            );
+            if (finalization.status === 'blocked') {
+                await store.update(run.id, { status: 'blocked' });
+                return `${formatted}\nBlocked: ${finalization.reason}`;
+            }
+            formatted +=
+                finalization.status === 'committed'
+                    ? `\nCommitted approved patch as ${finalization.commit}.`
+                    : '\nPublished approved changes without committing.';
+        }
+        return formatted;
     } catch (error) {
         await workspaces.finish(run.id, 'failed').catch(() => {});
         throw error;

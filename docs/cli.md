@@ -27,6 +27,13 @@ Empty prompts, invalid paths, unknown options, configuration failures, and
 runtime failures are written to stderr and return a non-zero status. Use
 `--help` and `--version` for command metadata.
 
+Approved mutation runs publish their reviewed patch but leave it uncommitted by
+default. Add `--commit`, or directly request a commit in the prompt, to create
+one final commit after publication. A prompt may supply a message (for example,
+`commit the changes with message "fix: validate settings"`); otherwise a safe
+default is generated. Hooks run normally. Hook rejection or hook-modified source
+is reported as blocked rather than bypassed or accepted without review.
+
 Each execution is recorded outside the target repository under the platform
 user-data directory (`$XDG_DATA_HOME/flue-agent` on Linux,
 `~/Library/Application Support/flue-agent` on macOS, or the local application

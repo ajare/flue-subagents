@@ -121,7 +121,9 @@ const TRANSITIONS: Readonly<Record<RunStatus, ReadonlySet<RunStatus>>> = {
     ]),
     needs_input: new Set(['running', 'blocked', 'failed', 'interrupted']),
     interrupted: new Set(['running', 'blocked', 'failed']),
-    completed: new Set(),
+    // Post-publication commit hooks can fail or mutate output after review.
+    // That late failure must be durably represented rather than reported as success.
+    completed: new Set(['blocked']),
     blocked: new Set(),
     failed: new Set(),
 };

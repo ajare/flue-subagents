@@ -24,7 +24,7 @@ import { completionEligibility } from './delegation-ledger.ts';
 import { WorkspaceManager } from './workspaces.ts';
 
 /** Raw bytes, not Git-filtered blobs: publication must reproduce reviewed content. */
-interface FileImage {
+export interface FileImage {
     kind: 'file' | 'symlink';
     mode: number;
     data: string;
@@ -45,7 +45,7 @@ export interface PatchRevision {
     approvedNewFiles: string[];
     changes: PatchChange[];
 }
-interface Baseline {
+export interface PatchBaseline {
     git: GitPreflightResult;
     files: Snapshot;
     tracked: string[];
@@ -138,6 +138,21 @@ export class PatchManager {
             if (missing(error)) return null;
             throw error;
         });
+    }
+
+    /** Persisted receipt written only after exact publication succeeds. */
+    async published(id: string): Promise<PatchRevision | null> {
+        return await json<PatchRevision>(
+            join(this.directory(id), 'published.json'),
+        ).catch((error: unknown) => {
+            if (missing(error)) return null;
+            throw error;
+        });
+    }
+
+    /** Baseline is exposed read-only for post-publication commit verification. */
+    async baselineState(id: string): Promise<PatchBaseline> {
+        return await this.baseline(id);
     }
 
     /** Explicit approval is the exact latest revision hash, never an agent's text. */
@@ -370,7 +385,7 @@ export class PatchManager {
             throw new Error('Non-UTF-8 paths are unsupported');
         return stdout.toString().split('\0').filter(Boolean);
     }
-    private baseline(id: string): Promise<Baseline> {
+    private baseline(id: string): Promise<PatchBaseline> {
         return json(join(this.directory(id), 'baseline.json'));
     }
     private directory(id: string): string {
