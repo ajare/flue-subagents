@@ -44,6 +44,16 @@ import { PatchManager } from './patch-publication.ts';
 import { completionEligibility, replayLedger } from './delegation-ledger.ts';
 import { isMutationRun } from './review-gating.ts';
 import { RunStore } from './run-storage.ts';
+import {
+    buildReport,
+    cleanupRun,
+    formatReport,
+    listRuns,
+    publicEvents,
+    saveOutcome,
+    TRUST_WARNING,
+    type RunReport,
+} from './reporting.ts';
 import { workspaceLocal } from './sandboxes/workspace-local.ts';
 import { WorkspaceManager } from './workspaces.ts';
 
@@ -88,13 +98,17 @@ interface ParsedArguments {
 }
 
 export const HELP = `Usage:
-  flue-agent resume <run-id> [answer]
+  flue-agent list [--json]
+  flue-agent inspect <run-id> [--json]
+  flue-agent cleanup <run-id> | cleanup --expired
+  flue-agent resume <run-id> [answer] [--json]
   flue-agent [--repo <path>] [--allow-dirty] [--commit] "<prompt>"
   printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty] [--commit]
 
 Submit one engineering objective for autonomous execution.
 
 Options:
+  --json         Emit NDJSON events and a final JSON report
   --repo <path>  Repository to operate on (default: current directory)
   --allow-dirty  Permit and fingerprint staged, unstaged, and untracked changes
   --commit       Commit the approved published patch (hooks run normally)
@@ -226,8 +240,97 @@ export async function runCli(
     const stdout = dependencies.stdout ?? process.stdout;
     const stderr = dependencies.stderr ?? process.stderr;
 
+    let json = false;
+    let finalReport: RunReport | undefined;
+    const seen = new Map<string, number>();
+    const emit = (event: object) => {
+        if (json) stdout.write(`${JSON.stringify(event)}\n`);
+        else
+            stderr.write(
+                `${Object.entries(event)
+                    .filter(
+                        ([key, value]) =>
+                            !['type', 'sequence', 'runId'].includes(key) &&
+                            value !== undefined,
+                    )
+                    .map(([key, value]) => `${key}: ${String(value)}`)
+                    .join(' | ')}\n`,
+            );
+    };
+    const store = new RunStore({
+        env: dependencies.env,
+        onUpdate: (run) => {
+            for (const event of publicEvents(run).filter(
+                (event) => event.sequence > (seen.get(run.id) ?? 0),
+            ))
+                emit(event);
+            seen.set(run.id, run.ledger.length);
+        },
+    });
+    const executionOptions: RunExecutionOptions = {
+        store,
+        onReport: (report) => {
+            finalReport = report;
+        },
+        onEvent: emit,
+    };
+    const display = (output?: string) => {
+        if (finalReport)
+            stdout.write(
+                `${json ? JSON.stringify(finalReport) : formatReport(finalReport)}\n`,
+            );
+        else if (output)
+            stdout.write(
+                `${json ? JSON.stringify({ type: 'result', summary: output }) : output}\n`,
+            );
+        return finalReport?.exitCode ?? 0;
+    };
     try {
+        const separator = argv.indexOf('--');
+        argv = argv.filter((argument, index) => {
+            if (argument === '--json' && (separator < 0 || index < separator)) {
+                json = true;
+                return false;
+            }
+            return true;
+        });
+        if (['list', 'inspect', 'cleanup'].includes(argv[0] ?? '')) {
+            const [command, id] = argv;
+            if (command === 'list') {
+                if (argv.length !== 1)
+                    throw new CliUsageError('Usage: flue-agent list [--json]');
+                const runs = await listRuns(store);
+                stdout.write(
+                    json
+                        ? `${JSON.stringify({ type: 'runs', runs: runs.map((run) => ({ id: run.id, status: run.status, workspace: run.locations.workspace })) })}\n`
+                        : `${runs.map((run) => `${run.id}: ${run.status} — ${run.locations.workspace ?? 'no workspace'}`).join('\n') || 'No runs.'}\n`,
+                );
+            } else {
+                if (!id || argv.length !== 2)
+                    throw new CliUsageError(
+                        `Usage: flue-agent ${command} <run-id>`,
+                    );
+                if (command === 'inspect') {
+                    const report = await buildReport(store, id);
+                    stdout.write(
+                        `${json ? JSON.stringify(report) : formatReport(report)}\n`,
+                    );
+                } else {
+                    if (id === '--expired') {
+                        for (const run of await listRuns(store))
+                            await cleanupRun(store, run.id, true);
+                    } else await cleanupRun(store, id);
+                    stdout.write(
+                        json
+                            ? `${JSON.stringify({ type: 'cleanup', target: id })}\n`
+                            : `Workspace cleanup complete: ${id}\n`,
+                    );
+                }
+            }
+            return 0;
+        }
         if (argv[0] === 'resume') {
+            stderr.write(`${TRUST_WARNING}\n`);
             if (!argv[1] || argv.length > 3)
                 throw new CliUsageError(
                     'Usage: flue-agent resume <run-id> [answer]',
@@ -240,10 +343,9 @@ export async function runCli(
                       )
                     : undefined);
             const output = await resumeRequest(argv[1], answer, {
-                store: new RunStore({ env: dependencies.env }),
+                ...executionOptions,
             });
-            stdout.write(`${output}\n`);
-            return 0;
+            return display(output);
         }
         const parsed = parseCliArguments(
             argv,
@@ -270,11 +372,18 @@ export async function runCli(
             allowDirty: parsed.allowDirty,
             commit: parsed.commit,
         });
-        const output = await (dependencies.execute ?? executeRequest)(request);
-        if (output !== undefined && output !== '') stdout.write(`${output}\n`);
-        return 0;
+        stderr.write(`${TRUST_WARNING}\n`);
+        const output = dependencies.execute
+            ? await dependencies.execute(request)
+            : await executeRequest(request, executionOptions);
+        return display(output);
     } catch (error) {
-        stderr.write(`flue-agent: ${errorMessage(error)}\n`);
+        if (finalReport) return display();
+        if (json)
+            stdout.write(
+                `${JSON.stringify({ type: 'error', message: errorMessage(error), exitCode: 1 })}\n`,
+            );
+        else stderr.write(`flue-agent: ${errorMessage(error)}\n`);
         return 1;
     }
 }
@@ -285,6 +394,8 @@ export interface RunExecutionOptions {
     signal?: AbortSignal;
     resumeId?: string;
     answer?: string;
+    onReport?: (report: RunReport) => void;
+    onEvent?: (event: object) => void;
 }
 
 export async function resumeRequest(
@@ -333,6 +444,12 @@ export async function executeRequest(
             conversationId,
         }));
 
+    const unlock = existing ? undefined : await lockRun(store, run.id);
+    const report = async (summary: string) => {
+        await saveOutcome(store, run.id, summary);
+        options.onReport?.(await buildReport(store, run.id));
+        return summary;
+    };
     const removeSignals = cancellationSignals(controller);
     try {
         signal.throwIfAborted();
@@ -346,6 +463,7 @@ export async function executeRequest(
         if (!existing)
             await patches.initialize(run.id, request.repositoryState);
         await checkModelConnectivity(request.configuration, { signal });
+        const commandAudit = new FileCommandAuditLog(run.locations.auditLog);
         const orchestrator = createOrchestrator({
             configuration: request.configuration,
             cwd: workspace,
@@ -356,7 +474,27 @@ export async function executeRequest(
                 checkLimit: () => workspaces.checkLimit(run.id),
                 afterMutation: () => patches.capture(run.id),
                 commandTimeoutMs: request.configuration.commandTimeoutMs,
-                commandAudit: new FileCommandAuditLog(run.locations.auditLog),
+                commandAudit: {
+                    record: async (record) => {
+                        await commandAudit.record(record);
+                        const {
+                            timestamp,
+                            command,
+                            durationMs,
+                            exitCode,
+                            outcome,
+                        } = record;
+                        options.onEvent?.({
+                            type: 'command',
+                            runId: run.id,
+                            timestamp,
+                            command,
+                            durationMs,
+                            exitCode,
+                            outcome,
+                        });
+                    },
+                },
             }),
         });
         const runtime = await start({
@@ -484,16 +622,18 @@ export async function executeRequest(
             );
             if (finalization.status === 'blocked') {
                 await store.update(run.id, { status: 'blocked' });
-                return `${formatted}\nBlocked: ${finalization.reason}`;
+                return await report(`Blocked: ${finalization.reason}`);
             }
             formatted +=
                 finalization.status === 'committed'
                     ? `\nCommitted approved patch as ${finalization.commit}.`
                     : '\nPublished approved changes without committing.';
         }
-        return result.status === 'needs_input'
-            ? `${formatted}\nResume: flue-agent resume ${run.id} "<answer>"`
-            : formatted;
+        return await report(
+            result.status === 'needs_input'
+                ? `${formatted}\nResume: flue-agent resume ${run.id} "<answer>"`
+                : formatted,
+        );
     } catch (error) {
         if (signal.aborted) {
             for (const entry of replayLedger((await store.read(run.id)).ledger)
@@ -510,12 +650,22 @@ export async function executeRequest(
             }
             await checkpointRun(store, run.id, request).catch(() => {});
             await workspaces.finish(run.id, 'interrupted');
-            return `Interrupted run ${run.id}. Resume: flue-agent resume ${run.id}`;
+            return await report(
+                `Interrupted run ${run.id}. Resume: flue-agent resume ${run.id}`,
+            );
         }
-        await workspaces.finish(run.id, 'failed').catch(() => {});
+        const failedRun = await store.read(run.id);
+        await workspaces
+            .finish(
+                run.id,
+                failedRun.status === 'completed' ? 'blocked' : 'failed',
+            )
+            .catch(() => {});
+        await report(errorMessage(error));
         throw error;
     } finally {
         removeSignals();
+        await unlock?.();
     }
 }
 

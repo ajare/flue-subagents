@@ -17,6 +17,7 @@ import {
     type GitPreflightResult,
 } from './git-preflight.ts';
 import type { RunStore, RunStatus } from './run-storage.ts';
+import { lockRun } from './resumption.ts';
 
 export class WorkspaceLimitError extends Error {
     readonly code = 'workspace_limit_exceeded';
@@ -215,7 +216,11 @@ export class WorkspaceManager {
     async sweep(now = Date.now()): Promise<void> {
         let ids: string[];
         try {
-            ids = await readdir(this.store.runsDirectory);
+            ids = (
+                await readdir(this.store.runsDirectory, { withFileTypes: true })
+            )
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => entry.name);
         } catch (error) {
             if (
                 error instanceof Error &&
@@ -225,7 +230,24 @@ export class WorkspaceManager {
                 return;
             throw error;
         }
-        for (const id of ids) await this.cleanupExpired(id, now);
+        for (const id of ids) {
+            let unlock: (() => Promise<void>) | undefined;
+            try {
+                unlock = await lockRun(this.store, id);
+                await this.cleanupExpired(id, now);
+            } catch (error) {
+                if (
+                    !(
+                        error instanceof Error &&
+                        'code' in error &&
+                        error.code === 'EEXIST'
+                    )
+                )
+                    throw error;
+            } finally {
+                await unlock?.();
+            }
+        }
     }
 
     private async copyDirtyState(

@@ -1,6 +1,6 @@
 # FLUE-019 — Implement reporting and run-management commands
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** L
 - **Depends on:** FLUE-006, FLUE-013, FLUE-016, FLUE-018
 
@@ -17,6 +17,12 @@ Make autonomous activity and outcomes understandable to humans and automation wi
 - Add `list`, `inspect`, and `cleanup` commands.
 - Apply retention expiry to unsuccessful workspaces.
 - Display the trusted-local execution warning for mutation runs.
+
+## Implementation
+
+See [reporting and run management](../reporting.md) for output contracts, exit
+codes, retention, privacy boundaries, and management commands. Coverage lives in
+`tests/reporting.test.ts` alongside existing workspace lifecycle tests.
 
 ## Acceptance criteria
 

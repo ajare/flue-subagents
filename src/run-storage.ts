@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
     mkdir,
+    lstat,
     open,
     readFile,
     realpath,
@@ -85,6 +86,7 @@ export interface RunStoreOptions {
     env?: NodeJS.ProcessEnv;
     now?: () => Date;
     generateId?: () => string;
+    onUpdate?: (record: RunRecord) => void;
 }
 
 export class RunStorageError extends Error {
@@ -164,6 +166,7 @@ export class RunStore {
     readonly runsDirectory: string;
     private readonly now: () => Date;
     private readonly generateId: () => string;
+    private readonly onUpdate?: (record: RunRecord) => void;
     private readonly updates = new Map<string, Promise<unknown>>();
 
     constructor(options: RunStoreOptions = {}) {
@@ -171,6 +174,7 @@ export class RunStore {
         this.runsDirectory = join(this.root, 'runs');
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
+        this.onUpdate = options.onUpdate;
     }
 
     async create(input: CreateRunInput): Promise<RunRecord> {
@@ -236,6 +240,9 @@ export class RunStore {
         assertRunId(id);
         let source: string;
         try {
+            if (!(await lstat(this.runDirectory(id))).isDirectory()) {
+                throw new Error('Run directory must not be a symbolic link');
+            }
             source = await readFile(this.recordPath(id), 'utf8');
         } catch (error) {
             if (isNodeError(error) && error.code === 'ENOENT') {
@@ -312,7 +319,9 @@ export class RunStore {
                 if (status === 'completed') assertReviewApproval(next.ledger);
                 validateRunRecord(next, id);
                 await writeAtomic(this.recordPath(id), next);
-                return freezeRecord(next);
+                const frozen = freezeRecord(next);
+                this.onUpdate?.(frozen);
+                return frozen;
             });
         this.updates.set(id, operation);
         try {

@@ -24,8 +24,10 @@ SHA-256 fingerprint of the complete allowed starting state so later phases can
 detect concurrent changes.
 
 Empty prompts, invalid paths, unknown options, configuration failures, and
-runtime failures are written to stderr and return a non-zero status. Use
-`--help` and `--version` for command metadata.
+runtime failures return a non-zero status. Human diagnostics go to stderr;
+`--json` emits NDJSON events and structured outcomes to stdout. Use `--help` and
+`--version` for command metadata. See [reporting](reporting.md) for stable exit
+codes and the `list`, `inspect`, and `cleanup` commands.
 
 Approved mutation runs publish their reviewed patch but leave it uncommitted by
 default. Add `--commit`, or directly request a commit in the prompt, to create
