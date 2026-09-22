@@ -1,6 +1,6 @@
 # FLUE-018 — Implement cancellation and safe resumption
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Difficulty:** XL
 - **Depends on:** FLUE-006, FLUE-008, FLUE-013, FLUE-015
 
@@ -17,6 +17,10 @@ Preserve recoverable work while stopping model and command execution promptly af
 - Add `flue-agent resume <run-id> [answer]` with stdin support where appropriate.
 - Verify repository identity and fingerprints before continuation.
 - Refuse incompatible continuation while retaining inspectability and cleanup.
+
+## Implementation
+
+See [cancellation and resumption](../resumption.md) for CLI usage and fail-closed recovery boundaries.
 
 ## Acceptance criteria
 

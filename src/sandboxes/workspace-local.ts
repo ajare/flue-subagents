@@ -7,6 +7,7 @@ import { readOnlyLocal } from './read-only-local.ts';
 /** File API confinement plus workspace accounting. Shell remains trusted-local. */
 export function workspaceLocal(options: {
     cwd: string;
+    signal?: AbortSignal;
     env: Record<string, string>;
     checkLimit: () => Promise<unknown>;
     commandTimeoutMs: number;
@@ -66,6 +67,7 @@ export function workspaceLocal(options: {
             const checked = async <T>(
                 operation: () => Promise<T>,
             ): Promise<T> => {
+                options.signal?.throwIfAborted();
                 await options.checkLimit();
                 try {
                     return await operation();
@@ -138,12 +140,13 @@ export function workspaceLocal(options: {
                             result = await sandbox.exec(command, {
                                 ...settings,
                                 cwd,
-                                signal: settings?.signal
-                                    ? AbortSignal.any([
-                                          settings.signal,
-                                          controller.signal,
-                                      ])
-                                    : controller.signal,
+                                signal: AbortSignal.any([
+                                    controller.signal,
+                                    ...(settings?.signal
+                                        ? [settings.signal]
+                                        : []),
+                                    ...(options.signal ? [options.signal] : []),
+                                ]),
                                 timeoutMs: Math.min(
                                     settings?.timeoutMs ??
                                         options.commandTimeoutMs,

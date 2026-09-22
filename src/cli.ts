@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, realpath, rm, stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { init } from '@flue/runtime';
-import { start } from '@flue/runtime/node';
+import { sqlite, start } from '@flue/runtime/node';
+import {
+    cancellationSignals,
+    checkpointRun,
+    loadContinuation,
+    lockRun,
+} from './resumption.ts';
 import { createOrchestrator } from './agents/orchestrator.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
 import {
@@ -82,6 +88,7 @@ interface ParsedArguments {
 }
 
 export const HELP = `Usage:
+  flue-agent resume <run-id> [answer]
   flue-agent [--repo <path>] [--allow-dirty] [--commit] "<prompt>"
   printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty] [--commit]
 
@@ -220,6 +227,24 @@ export async function runCli(
     const stderr = dependencies.stderr ?? process.stderr;
 
     try {
+        if (argv[0] === 'resume') {
+            if (!argv[1] || argv.length > 3)
+                throw new CliUsageError(
+                    'Usage: flue-agent resume <run-id> [answer]',
+                );
+            const answer =
+                argv[2] ??
+                (dependencies.stdin || !process.stdin.isTTY
+                    ? await readCompleteInput(
+                          dependencies.stdin ?? process.stdin,
+                      )
+                    : undefined);
+            const output = await resumeRequest(argv[1], answer, {
+                store: new RunStore({ env: dependencies.env }),
+            });
+            stdout.write(`${output}\n`);
+            return 0;
+        }
         const parsed = parseCliArguments(
             argv,
             dependencies.cwd ?? process.cwd(),
@@ -257,6 +282,29 @@ export async function runCli(
 export interface RunExecutionOptions {
     store?: RunStore;
     conversationId?: string;
+    signal?: AbortSignal;
+    resumeId?: string;
+    answer?: string;
+}
+
+export async function resumeRequest(
+    id: string,
+    answer?: string,
+    options: RunExecutionOptions = {},
+): Promise<string> {
+    const store = options.store ?? new RunStore();
+    const unlock = await lockRun(store, id);
+    try {
+        const request = await loadContinuation(store, id, answer);
+        return await executeRequest(request, {
+            ...options,
+            store,
+            resumeId: id,
+            answer,
+        });
+    } finally {
+        await unlock();
+    }
 }
 
 /** Submit one request to an in-process Flue runtime and persist its lifecycle. */
@@ -265,28 +313,45 @@ export async function executeRequest(
     options: RunExecutionOptions = {},
 ): Promise<string> {
     const store = options.store ?? new RunStore();
-    const conversationId = options.conversationId ?? randomUUID();
+    const existing = options.resumeId
+        ? await store.read(options.resumeId)
+        : undefined;
+    const conversationId =
+        existing?.conversationId ?? options.conversationId ?? randomUUID();
+    const controller = new AbortController();
+    const signal = options.signal
+        ? AbortSignal.any([options.signal, controller.signal])
+        : controller.signal;
     const workspaces = new WorkspaceManager(store);
     const patches = new PatchManager(store);
-    await workspaces.sweep();
-    const run = await store.create({
-        repository: request.repository,
-        configuration: request.configuration,
-        conversationId,
-    });
+    if (!existing) await workspaces.sweep();
+    const run =
+        existing ??
+        (await store.create({
+            repository: request.repository,
+            configuration: request.configuration,
+            conversationId,
+        }));
 
+    const removeSignals = cancellationSignals(controller);
     try {
-        const workspace = await workspaces.create(
-            run.id,
-            request.repositoryState,
-        );
-        await patches.initialize(run.id, request.repositoryState);
-        await checkModelConnectivity(request.configuration);
+        signal.throwIfAborted();
+        if (existing) {
+            await rm(join(store.runDirectory(run.id), 'resume.json'));
+            await store.update(run.id, { status: 'running' });
+        }
+        const workspace =
+            existing?.locations.workspace ??
+            (await workspaces.create(run.id, request.repositoryState));
+        if (!existing)
+            await patches.initialize(run.id, request.repositoryState);
+        await checkModelConnectivity(request.configuration, { signal });
         const orchestrator = createOrchestrator({
             configuration: request.configuration,
             cwd: workspace,
             sandbox: workspaceLocal({
                 cwd: workspace,
+                signal,
                 env: restrictedAgentEnvironment(),
                 checkLimit: () => workspaces.checkLimit(run.id),
                 afterMutation: () => patches.capture(run.id),
@@ -295,13 +360,16 @@ export async function executeRequest(
             }),
         });
         const runtime = await start({
+            db: sqlite(join(store.runDirectory(run.id), 'conversation.sqlite')),
             agents: [{ agent: orchestrator, name: 'flue-agent-orchestrator' }],
             providers: [createModelProvider(request.configuration)],
         });
 
         let output: string;
         const limits = new OrchestrationLimits(request.configuration, {
-            startedAt: Date.parse(run.timestamps.createdAt),
+            startedAt: existing
+                ? Date.now()
+                : Date.parse(run.timestamps.createdAt),
         });
         const disposePolicy = installOrchestrationPolicy({
             conversationId,
@@ -313,17 +381,29 @@ export async function executeRequest(
         try {
             const handle = init(orchestrator, { id: conversationId });
             output = await blockOnLimit(store, run.id, () =>
-                limits.runWithinDeadline(async (signal) => {
+                limits.runWithinDeadline(async (deadlineSignal) => {
+                    const executionSignal = AbortSignal.any([
+                        signal,
+                        deadlineSignal,
+                    ]);
                     const abort = () => {
                         void handle.abort();
                     };
-                    signal.addEventListener('abort', abort, { once: true });
+                    executionSignal.addEventListener('abort', abort, {
+                        once: true,
+                    });
                     try {
-                        let prompt = request.prompt;
+                        executionSignal.throwIfAborted();
+                        let prompt = existing
+                            ? options.answer?.trim() ||
+                              'Continue the interrupted objective using the existing conversation and workspace. Inspect partial work before retrying operations.'
+                            : request.prompt;
                         for (let attempt = 0; ; attempt++) {
                             const receipt = await handle.dispatch(prompt);
                             const text = (
-                                await handle.read(receipt, { signal })
+                                await handle.read(receipt, {
+                                    signal: executionSignal,
+                                })
                             ).text;
                             const decision = validateOrchestratorResult(text);
                             const latest = await patches.latest(run.id);
@@ -369,18 +449,22 @@ export async function executeRequest(
                             prompt = `Completion rejected: ${gate.reasons.join('; ')}. Delegate independent review of the current revision if missing. For substantiated changes_requested findings, delegate implementer repair, then fresh independent review. Never waive findings. At most two repair cycles are allowed. Return blocked with unresolved findings if unable to proceed. Preserve the original objective and supply all required briefing sections.`;
                         }
                     } finally {
-                        signal.removeEventListener('abort', abort);
+                        executionSignal.removeEventListener('abort', abort);
+                        if (executionSignal.aborted) await handle.abort();
                     }
                 }),
             );
         } finally {
             await disposePolicy().finally(() => runtime.stop());
         }
+        signal.throwIfAborted();
         const result = validateOrchestratorResult(output);
         assertOrchestrationIntegrity(result, (await store.read(run.id)).ledger);
         await workspaces.checkLimit(run.id);
         const latest = await patches.latest(run.id);
         await patches.capture(run.id, latest?.approvedNewFiles);
+        if (result.status === 'needs_input')
+            await checkpointRun(store, run.id, request);
         await workspaces.finish(run.id, result.status);
         let formatted = formatOrchestratorResult(result);
         const events = (await store.read(run.id)).ledger;
@@ -407,10 +491,31 @@ export async function executeRequest(
                     ? `\nCommitted approved patch as ${finalization.commit}.`
                     : '\nPublished approved changes without committing.';
         }
-        return formatted;
+        return result.status === 'needs_input'
+            ? `${formatted}\nResume: flue-agent resume ${run.id} "<answer>"`
+            : formatted;
     } catch (error) {
+        if (signal.aborted) {
+            for (const entry of replayLedger((await store.read(run.id)).ledger)
+                .delegations) {
+                if (!entry.completedAt)
+                    await store.update(run.id, {
+                        ledgerAction: {
+                            type: 'failure',
+                            id: entry.id,
+                            message:
+                                'Delegation interrupted; inspect partial work before retrying',
+                        },
+                    });
+            }
+            await checkpointRun(store, run.id, request).catch(() => {});
+            await workspaces.finish(run.id, 'interrupted');
+            return `Interrupted run ${run.id}. Resume: flue-agent resume ${run.id}`;
+        }
         await workspaces.finish(run.id, 'failed').catch(() => {});
         throw error;
+    } finally {
+        removeSignals();
     }
 }
 
