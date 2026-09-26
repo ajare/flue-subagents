@@ -17,6 +17,7 @@ import { createOrchestrator } from './agents/orchestrator.ts';
 import { readStructuredResult } from './agents/structured-result.ts';
 import { recordPrompt } from './execution-telemetry.ts';
 import { AgentNames } from './agent-names.ts';
+import { ConsoleLog } from './console-log.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
 import {
     CommitManager,
@@ -81,6 +82,7 @@ export interface CliDependencies {
     stderr?: Pick<NodeJS.WriteStream, 'write'>;
     version?: string;
     execute?: ExecuteRequest;
+    modelTransport?: RunExecutionOptions['modelTransport'];
 }
 
 export class CliUsageError extends Error {
@@ -240,9 +242,8 @@ export async function runCli(
     argv: readonly string[],
     dependencies: CliDependencies = {},
 ): Promise<number> {
-    const stdout = dependencies.stdout ?? process.stdout;
-    const stderr = dependencies.stderr ?? process.stderr;
-
+    let consoleLog: ConsoleLog;
+    let logRunOutput = true;
     let json = false;
     let finalReport: RunReport | undefined;
     const seen = new Map<string, number>();
@@ -265,6 +266,7 @@ export async function runCli(
     const store = new RunStore({
         env: dependencies.env,
         onUpdate: (run) => {
+            if (logRunOutput) consoleLog.attachRun(store.runDirectory(run.id));
             for (const event of publicEvents(run).filter(
                 (event) => event.sequence > (seen.get(run.id) ?? 0),
             ))
@@ -272,9 +274,19 @@ export async function runCli(
             seen.set(run.id, run.ledger.length);
         },
     });
+    try {
+        consoleLog = new ConsoleLog(store.root);
+    } catch (error) {
+        (dependencies.stderr ?? process.stderr).write(`flue-agent: cannot create console logs: ${errorMessage(error)}\n`);
+        return 1;
+    }
+    const stdout = consoleLog.tee('stdout', dependencies.stdout ?? process.stdout);
+    const stderr = consoleLog.tee('stderr', dependencies.stderr ?? process.stderr);
     const executionOptions: RunExecutionOptions = {
         store,
+        modelTransport: dependencies.modelTransport,
         onReport: (report) => {
+            consoleLog.attachRun(store.runDirectory(report.id));
             finalReport = report;
         },
         onEvent: emit,
@@ -300,6 +312,7 @@ export async function runCli(
             return true;
         });
         if (['list', 'inspect', 'cleanup'].includes(argv[0] ?? '')) {
+            logRunOutput = false;
             const [command, id] = argv;
             if (command === 'list') {
                 if (argv.length !== 1)
@@ -390,6 +403,8 @@ export async function runCli(
             );
         else stderr.write(`flue-agent: ${errorMessage(error)}\n`);
         return 1;
+    } finally {
+        consoleLog.close();
     }
 }
 

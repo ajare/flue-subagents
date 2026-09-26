@@ -99,6 +99,28 @@ may leave only start records. Resuming appends new prompt records rather than
 replacing previous telemetry. Logs contain no prompts, model responses or reasoning
 and are local artifacts, not part of the public `inspect` report.
 
+## Console transcripts
+
+Every CLI invocation tees its stdout and stderr to separate, byte-preserving
+`stdout.log` and `stderr.log` files under
+`<data-dir>/logs/<timestamp>-<invocation-id>/`. This includes human and JSON
+output, warnings, errors, final reports, and direct JavaScript runtime/library
+writes to the process streams during the CLI invocation. Help, management
+commands, and failures before run creation therefore have transcripts too.
+
+Once an execution is associated with a run, the same output is also appended to
+`<data-dir>/runs/<run-id>/stdout.log` and `stderr.log`. Earlier output from that
+invocation (including the trust warning) is copied in once. Resume appends rather
+than overwriting. Management commands keep their output in invocation logs only;
+`inspect` does not alter the inspected run. The structured audit and telemetry
+files remain separate and unchanged.
+
+Transcripts preserve stream contents, not cross-stream ordering. They are not
+redacted and can contain sensitive diagnostics; directories/files are created
+with owner-only permissions. They are retained with the other logs, not removed
+by workspace cleanup. Logging starts inside the CLI, so process-loader failures
+before CLI startup and OS-level messages are outside its capture boundary.
+
 ## Exit codes
 
 | Status | Code |
