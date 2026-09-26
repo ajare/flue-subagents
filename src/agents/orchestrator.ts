@@ -19,6 +19,7 @@ import { explorer } from '../subagents/explorer.ts';
 import { implementer } from '../subagents/implementer.ts';
 import { planner } from '../subagents/planner.ts';
 import { reviewer } from '../subagents/reviewer.ts';
+import { useStructuredResult } from './structured-result.ts';
 
 export const ORCHESTRATOR_POLICY = `
 You are the lead software engineer responsible for the current repository. The
@@ -93,7 +94,9 @@ version 1 JSON object.
 
 TERMINAL RESULT CONTRACT
 
-Return only one JSON object, without Markdown fences or commentary:
+You MUST call submit_orchestrator_result to finish. Pass the following object
+as tool arguments; put the entire user-facing answer in summary. Plain prose
+or a JSON text message does not complete the response:
 
 {
   "schemaVersion": 1,
@@ -165,6 +168,7 @@ function renderOrchestrator(
     useSubagent(planner);
     useSubagent(implementer);
     useSubagent(reviewer);
+    useStructuredResult();
 
     return ORCHESTRATOR_POLICY;
 }

@@ -6,6 +6,15 @@ emit newline-delimited JSON: public delegation/command events followed by one
 to stderr and prints the same report data to stdout. The trusted-local warning
 always goes to stderr (including JSON mode). Worktrees are not security sandboxes.
 
+Command and ledger-event timestamps are stored as epoch milliseconds. Public
+JSON events expose that number as `ts`; human output formats `ts` as a UTC ISO
+string. Legacy ledger entries with ISO timestamps remain readable. Each command
+and ledger event includes `agent` (`orchestrator` for root activity); delegated
+activity also includes `taskId`, distinguishing concurrent tasks of the same
+role. Ownership is persisted with new audit and ledger records. For legacy
+records, reporting uses the delegation role where available, otherwise
+`orchestrator`.
+
 Reports include the persisted status, outcome summary, changed file paths,
 validation commands and results, current-revision reviews, limitations, risks,
 timing, retained workspace and continuation command. Reduced-confidence approval
@@ -20,6 +29,68 @@ or command stdout/stderr. Existing private runtime storage and command audit
 files are not exposed by `inspect`; these local artifacts still require trusted
 access. Structured task summaries and command strings can contain repository
 information: reporting is not a secrets-redaction service.
+
+Each completed model turn also emits an `llm_output` event with `agent`,
+`taskId` (for delegated work), `turnId`, `outputTokens`, and
+`outputTokenPercentage` (count / configured max output tokens, clamped to [0, 1];
+`null` when usage is unavailable). Counts are per model
+response, including tool-call responses, not per command or patch checkpoint.
+Unavailable usage is `null`, not zero; failed turns can still report consumed
+tokens. These events are also saved in `execution-telemetry.jsonl`.
+
+Every `llm_output` also reports `contextTokens` (the input context for that
+turn, including cached tokens), `contextWindow` (the configured token capacity),
+and `contextUtilization` (`contextTokens / contextWindow`, clamped to [0, 1]).
+These apply to both orchestrator and sub-agent turns; `agent` and `taskId`
+identify the owner. Context size uses provider `usage.prompt_tokens`, falling
+back to runtime input plus cache-read and cache-write counts. Missing or invalid
+usage yields `null` size/utilization, not zero. This is a per-response snapshot,
+not a continuous measurement or a sum across turns, and excludes generated output.
+
+When supplied by the OpenAI-compatible provider, `llm_output` also includes the
+full `timings` and `usage` objects, preserving provider field names and nested
+usage details. Timings include prefill/generation milliseconds and tokens/sec,
+cache/prefix counts, disk restore statistics, and draft-token counts. Missing
+objects are omitted; no client-side time-to-first-token metric is added. Repeated
+final streaming metadata is merged, not summed. Human output renders these
+objects as JSON. Only these statistics are retained, not response content.
+
+## End-of-run performance summary
+
+Human reports end with wall-clock elapsed seconds and average generation token/s
+for each invoked agent role (including the orchestrator). JSON reports expose
+`durationMs` and `agentPerformance`; `inspect` reconstructs these from persisted
+telemetry. Wall-clock time spans run creation to completion, including pauses
+between resumptions, not the sum of parallel task durations.
+
+Each role's rate is `1000 * sum(timings.predicted_n) / sum(timings.predicted_ms)`
+across its model calls, including reasoning output and calls from resumed prompts.
+It is **not** an arithmetic mean of per-call rates, nor tokens divided by run
+wall time. Prefill and tool time are excluded. Multiple invocations of one role
+are combined; duplicate turn records and task-level totals are not double-counted.
+`llmCalls` and `measuredCalls` show coverage. If any call lacks valid timing,
+including an interrupted call, the average is `null` (human: unavailable);
+token/time totals then cover only measured calls. Older runs without per-turn
+telemetry cannot supply rates.
+
+## Execution timing and token usage
+
+Each prompt dispatch (including continuations and review-gate retries) appends to
+`execution-telemetry.jsonl` in the run directory. Records carry `runId` and a
+unique `promptId`, with `prompt_start` / `prompt_end` boundaries.
+
+- `subagent_start` / `subagent_end`: task ID, role, UTC start/end timestamps,
+  status and total provider-reported output tokens across that task's LLM turns.
+  `usageComplete: false` means the token count is only a known subtotal; absent
+  usage is not estimated from response text.
+- `orchestrator_llm_start` / `orchestrator_llm_end`: turn ID, request start and
+  response end timestamps, model/purpose on start, status and output tokens
+  (`null` when unavailable). These intervals exclude tool execution.
+
+Unfinished spans are marked interrupted when dispatch exits. A hard process kill
+may leave only start records. Resuming appends new prompt records rather than
+replacing previous telemetry. Logs contain no prompts, model responses or reasoning
+and are local artifacts, not part of the public `inspect` report.
 
 ## Exit codes
 

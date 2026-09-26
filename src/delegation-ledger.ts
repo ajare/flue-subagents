@@ -33,7 +33,10 @@ const actionSchema = v.variant('type', [
 export type LedgerAction = v.InferOutput<typeof actionSchema>;
 export interface LedgerEvent {
     sequence: number;
-    at: string;
+    /** New records use epoch milliseconds; ISO strings are legacy records. */
+    at: number | string;
+    agent?: string;
+    taskId?: string;
     action: LedgerAction;
 }
 export interface DelegationEntry {
@@ -61,10 +64,12 @@ export interface LedgerState {
 const eventsSchema = v.array(
     v.strictObject({
         sequence: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        at: v.pipe(
-            text,
-            v.check((value) => Number.isFinite(Date.parse(value))),
-        ),
+        at: v.union([
+            v.pipe(v.number(), v.integer(), v.check((value) => Number.isFinite(new Date(value).getTime()))),
+            v.pipe(text, v.check((value) => Number.isFinite(Date.parse(value)))),
+        ]),
+        agent: v.optional(text),
+        taskId: v.optional(text),
         action: actionSchema,
     }),
 );
@@ -76,9 +81,11 @@ export function replayLedger(input: unknown): LedgerState {
     const entries = new Map<string, DelegationEntry>();
     let previousTime = -Infinity;
     for (const [index, event] of events.entries()) {
-        if (event.sequence !== index + 1 || Date.parse(event.at) < previousTime)
+        const time = typeof event.at === 'number' ? event.at : Date.parse(event.at);
+        const at = new Date(time).toISOString();
+        if (event.sequence !== index + 1 || time < previousTime)
             throw new Error('Invalid ledger event order');
-        previousTime = Date.parse(event.at);
+        previousTime = time;
         const action = event.action;
         if (action.type === 'patch') {
             if (
@@ -103,7 +110,7 @@ export function replayLedger(input: unknown): LedgerState {
             const entry: DelegationEntry = {
                 ...action,
                 sequence: event.sequence,
-                startedAt: event.at,
+                startedAt: at,
                 completedAt: null,
                 patchBefore: state.patch,
                 patchAfter: null,
@@ -122,7 +129,7 @@ export function replayLedger(input: unknown): LedgerState {
             throw new Error('Delegation must be active');
         if (action.type === 'malformed') {
             entry.malformedResults.push({
-                at: event.at,
+                at,
                 issues: action.issues,
             });
         } else if (action.type === 'retry') {
@@ -136,7 +143,7 @@ export function replayLedger(input: unknown): LedgerState {
                     action.result,
                 );
             } else entry.failure = action.message;
-            entry.completedAt = event.at;
+            entry.completedAt = at;
             entry.patchAfter = state.patch;
         }
     }

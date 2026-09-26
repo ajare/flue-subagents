@@ -1,8 +1,9 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import type { EventOwner } from './event-owner.ts';
 
-export interface CommandAuditRecord {
-    timestamp: string;
+export interface CommandAuditRecord extends EventOwner {
+    timestamp: number;
     command: string;
     cwd: string;
     durationMs: number;

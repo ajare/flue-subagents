@@ -12,15 +12,16 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { completionEligibility } from './delegation-ledger.ts';
 import {
     assertGitFingerprint,
+    type GitPreflightResult,
     gitEnvironment,
     preflightGitRepository,
     runGit,
-    type GitPreflightResult,
+    trackedNonGitlinkPaths,
 } from './git-preflight.ts';
 import type { RunStore } from './run-storage.ts';
-import { completionEligibility } from './delegation-ledger.ts';
 import { WorkspaceManager } from './workspaces.ts';
 
 /** Raw bytes, not Git-filtered blobs: publication must reproduce reviewed content. */
@@ -76,10 +77,10 @@ export class PatchManager {
         )
             throw new Error('Patch baseline does not belong to workspace');
         await assertGitFingerprint(git, { env: this.env });
-        const tracked = await this.names(git.repository.root, [
-            'ls-files',
-            '-z',
-        ]);
+        const tracked = await trackedNonGitlinkPaths(
+            git.repository.root,
+            this.env,
+        );
         const files = await this.snapshot(git.repository.root, tracked);
         await assertGitFingerprint(git, { env: this.env });
         const copied = await this.snapshot(run.locations.workspace, tracked);
@@ -367,7 +368,6 @@ export class PatchManager {
     private async snapshot(root: string, tracked: string[]): Promise<Snapshot> {
         const names = await this.names(root, [
             'ls-files',
-            '--cached',
             '--others',
             '--exclude-standard',
             '-z',

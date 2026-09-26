@@ -89,6 +89,9 @@ test('reports share outcomes and highlight limitations without reading private c
     assert.match(human, /Unable to finish/);
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_REASONING/);
     const events = publicEvents(await store.read(run.id));
+    assert.ok(events.every((event) => typeof event.ts === 'number'));
+    assert.ok(events.every((event) => typeof event.agent === 'string'));
+    assert.ok(events.every((event) => !('at' in event) && !('timestamp' in event)));
     assert.equal(events[2]?.verdict, 'approved_with_limitations');
     assert.ok(events[2]?.durationMs !== undefined);
 });

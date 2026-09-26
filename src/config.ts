@@ -29,10 +29,11 @@ export type AgentConfigurationInput = Partial<{
 
 export const DEFAULT_CONFIGURATION: Readonly<AgentConfiguration> =
     Object.freeze({
-        model: 'local/ornith',
-        endpoint: 'http://localhost:8080/v1',
+        model: 'halogen/qwen-3.8-flash-next',
+        endpoint: 'http://localhost:8731/v1',
         contextWindow: 262_144,
-        maxOutputTokens: 262_144,
+        // Output budget is separate from context size and must fit server policy.
+        maxOutputTokens: 65_536,
         reasoningEffort: 'high',
         readOnlyConcurrency: 4,
         implementerConcurrency: 1,
@@ -303,7 +304,7 @@ function validateConfiguration(
     const separator = configuration.model.indexOf('/');
     if (separator < 1 || separator === configuration.model.length - 1) {
         throw new ConfigurationError(
-            'model must use the provider/model form (for example local/ornith)',
+            'model must use the provider/model form (for example halogen/qwen-3.8-flash-next)',
         );
     }
 

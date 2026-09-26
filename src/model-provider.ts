@@ -2,6 +2,7 @@ import { createProvider, type Provider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 
 import type { AgentConfiguration } from './config.ts';
+import { statsFetch } from './provider-stats.ts';
 
 export interface ConnectivityCheckOptions {
     fetch?: typeof globalThis.fetch;
@@ -24,6 +25,7 @@ export function createModelProvider(
     configuration: AgentConfiguration,
 ): Provider {
     const { providerId, modelId } = splitModelSpecifier(configuration.model);
+    const api = openAICompletionsApi();
 
     return createProvider({
         id: providerId,
@@ -48,7 +50,14 @@ export function createModelProvider(
                 maxTokens: configuration.maxOutputTokens,
             },
         ],
-        api: openAICompletionsApi(),
+        api: {
+            stream(model, context, options) {
+                return api.stream(model, context, { ...options, fetch: statsFetch(options?.fetch) });
+            },
+            streamSimple(model, context, options) {
+                return api.streamSimple(model, context, { ...options, fetch: statsFetch(options?.fetch) });
+            },
+        },
     });
 }
 

@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-    GitPreflightError,
     assertGitFingerprint,
+    GitPreflightError,
     preflightGitRepository,
 } from '../src/git-preflight.ts';
 import { createGitFixture } from './helpers/git.ts';
@@ -31,6 +31,42 @@ test('clean repositories receive a stable identity and fingerprint', async (t) =
     assert.deepEqual(first.fingerprint, second.fingerprint);
     await assert.doesNotReject(
         assertGitFingerprint(first, { env: fixture.env }),
+    );
+});
+
+test('repositories with unchanged gitlinks are supported while submodule contents are excluded', async (t) => {
+    const fixture = await createGitFixture(t);
+    const commit = await fixture.git('rev-parse', 'HEAD');
+    await fixture.git(
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `160000,${commit},ext/module`,
+    );
+    await fixture.git('commit', '-m', 'Add submodule gitlink');
+    await fixture.write('ext/module/local-file', 'excluded content\n');
+
+    const baseline = await preflightGitRepository(fixture.path, {
+        env: fixture.env,
+    });
+    assert.equal(baseline.clean, true);
+    await assert.doesNotReject(
+        assertGitFingerprint(baseline, { env: fixture.env }),
+    );
+
+    await fixture.git('commit', '--allow-empty', '-m', 'Another commit');
+    const changedCommit = await fixture.git('rev-parse', 'HEAD');
+    await fixture.git(
+        'update-index',
+        '--cacheinfo',
+        `160000,${changedCommit},ext/module`,
+    );
+    await assert.rejects(
+        preflightGitRepository(fixture.path, {
+            allowDirty: true,
+            env: fixture.env,
+        }),
+        /Modified Git submodule references are not supported/,
     );
 });
 

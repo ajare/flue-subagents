@@ -101,14 +101,52 @@ test('diagnostics contain effective non-secret values and command env is allowli
     );
 });
 
-test('configured provider preserves the local defaults', () => {
+test('configured provider preserves the model defaults', () => {
     const provider = createModelProvider(resolveConfigurationSources({}));
     const [model] = provider.getModels();
-    assert.equal(provider.id, 'local');
-    assert.equal(model?.id, 'ornith');
-    assert.equal(model?.baseUrl, 'http://localhost:8080/v1');
+    assert.equal(provider.id, 'halogen');
+    assert.equal(model?.id, 'qwen-3.8-flash-next');
+    assert.equal(model?.baseUrl, 'http://localhost:8731/v1');
     assert.equal(model?.contextWindow, 262_144);
-    assert.equal(model?.maxTokens, 262_144);
+    assert.equal(model?.maxTokens, 65_536);
+});
+
+test('default provider request respects the local server output-token cap', async () => {
+    const configuration = resolveConfigurationSources({});
+    const provider = createModelProvider(configuration);
+    const [model] = provider.getModels();
+    assert.ok(model);
+    let budget: unknown;
+    const result = await provider
+        .streamSimple(
+            model,
+            {
+                messages: [
+                    {
+                        role: 'user',
+                        content: 'Count C++ lines excluding submodules',
+                        timestamp: 0,
+                    },
+                ],
+            },
+            {
+                apiKey: 'local',
+                reasoning: 'high',
+                onPayload(payload) {
+                    const request = payload as Record<string, unknown>;
+                    budget =
+                        request.max_tokens ?? request.max_completion_tokens;
+                    // Stop before HTTP dispatch: this test never contacts a model server.
+                    throw new Error('Captured request');
+                },
+            },
+        )
+        .result();
+    assert.match(result.errorMessage ?? '', /Captured request/);
+    assert.ok(
+        typeof budget === 'number' && budget > 0 && budget <= 65_536,
+        `max_tokens ${String(budget)} exceeds server cap 65536`,
+    );
 });
 
 test('connectivity check reports endpoint failures as infrastructure errors', async () => {
@@ -120,7 +158,7 @@ test('connectivity check reports endpoint failures as infrastructure errors', as
             return new Response('{}', { status: 200 });
         },
     });
-    assert.equal(requestedUrl, 'http://localhost:8080/v1/models');
+    assert.equal(requestedUrl, 'http://localhost:8731/v1/models');
 
     await assert.rejects(
         checkModelConnectivity(configuration, {

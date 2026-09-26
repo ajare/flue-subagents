@@ -2,6 +2,7 @@ import type { Dirent } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { replayLedger } from './delegation-ledger.ts';
+import { loadPerformanceSummary } from './performance-summary.ts';
 import { PatchManager } from './patch-publication.ts';
 import { lockRun } from './resumption.ts';
 import type { RunStore, RunRecord, RunStatus } from './run-storage.ts';
@@ -21,7 +22,7 @@ export const TRUST_WARNING =
 /** Deliberately excludes conversation messages, model reasoning and raw tool output. */
 export function publicEvents(run: RunRecord) {
     const state = replayLedger(run.ledger);
-    return run.ledger.map(({ sequence, at, action }) => {
+    return run.ledger.map(({ sequence, at, action, agent, taskId }) => {
         const entry =
             'id' in action
                 ? state.delegations.find((item) => item.id === action.id)
@@ -30,8 +31,10 @@ export function publicEvents(run: RunRecord) {
             type: 'event' as const,
             runId: run.id,
             sequence,
-            at,
+            ts: typeof at === 'number' ? at : Date.parse(at),
             event: action.type,
+            agent: agent ?? entry?.role ?? 'orchestrator',
+            taskId: taskId ?? entry?.id,
             role: entry?.role,
             task: entry?.task,
             durationMs: entry?.completedAt
@@ -83,6 +86,7 @@ export async function buildReport(store: RunStore, id: string) {
         durationMs:
             Date.parse(run.timestamps.completedAt ?? run.timestamps.updatedAt) -
             Date.parse(run.timestamps.createdAt),
+        agentPerformance: await loadPerformanceSummary(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         changedFiles: patch?.changes.map((change) => change.path) ?? [],
         validation: results.flatMap((result) =>
             result.role === 'implementer'
@@ -136,6 +140,11 @@ export function formatReport(report: RunReport): string {
         ...report.limitations.map((limitation) => `Limitation: ${limitation}`),
         `Retained workspace: ${report.workspace ?? 'none'}`,
         report.resume ? `Resume: ${report.resume}` : '',
+        'Performance summary:',
+        `Wall-clock time: ${(report.durationMs / 1000).toFixed(3)} s`,
+        ...report.agentPerformance.map((agent) =>
+            `${agent.agent}: ${agent.averageTokensPerSecond === null ? 'token/s unavailable' : `${agent.averageTokensPerSecond.toFixed(2)} token/s`} (${agent.llmCalls} LLM calls; ${agent.measuredCalls} timed)`,
+        ),
     ]
         .filter(Boolean)
         .join('\n');

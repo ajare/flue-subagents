@@ -14,8 +14,10 @@ cat objective.txt | flue-agent --repo /path/to/project
 
 `--repo` defaults to the current directory. The path is resolved to its
 canonical Git worktree root before configuration or execution begins. Non-Git,
-bare, unborn, sparse, conflicted, submodule-containing, and in-progress
-repositories are rejected before execution.
+bare, unborn, sparse, conflicted, and in-progress repositories are rejected
+before execution. Repositories may contain unchanged submodules; their working
+trees are excluded from fingerprints, workspaces, and patches. Staged changes to
+submodule references are rejected.
 
 The repository must be clean by default. Pass `--allow-dirty` to explicitly
 permit staged, unstaged, and untracked (but not ignored) changes. The CLI then

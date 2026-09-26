@@ -18,11 +18,13 @@ import {
     validateSubagentResult,
 } from './result-contracts.ts';
 import type { RunStore } from './run-storage.ts';
+import { withEventOwner } from './event-owner.ts';
+import { clearProviderStats, withProviderStats } from './provider-stats.ts';
 import type { PatchManager } from './patch-publication.ts';
 import { ReviewBoundary } from './review-gating.ts';
 
 const text = v.pipe(v.string(), v.minLength(1));
-const orchestratorResultSchema = v.strictObject({
+export const orchestratorResultSchema = v.strictObject({
     schemaVersion: v.literal(1),
     status: v.picklist(['completed', 'needs_input', 'blocked']),
     summary: text,
@@ -69,7 +71,12 @@ export function validateOrchestratorResult(
     let value = output;
     if (typeof output === 'string') {
         try {
-            value = JSON.parse(output);
+            // Tolerate presentation wrapping, not prose or partial JSON extraction.
+            const trimmed = output.trim();
+            const fenced = /^```(?:json)?[\t ]*\r?\n([\s\S]*?)\r?\n```$/u.exec(
+                trimmed,
+            );
+            value = JSON.parse(fenced ? (fenced[1] as string) : trimmed);
         } catch (cause) {
             throw new OrchestrationDefectError(
                 'Orchestrator result must be one JSON object',
@@ -279,6 +286,9 @@ export class OrchestrationPolicyController {
         context: FlueExecutionContext,
         next: () => Promise<T>,
     ): Promise<T> => {
+        if (operation.type === 'model' && context.instanceId === this.conversationId) {
+            return withProviderStats(operation.turnId, this.conversationId, next);
+        }
         if (
             operation.type !== 'task' ||
             context.instanceId !== this.conversationId
@@ -305,10 +315,13 @@ export class OrchestrationPolicyController {
                   )
                 : this.execute(intent, next);
         try {
-            return await blockOnLimit(this.store, this.runId, () =>
-                intent.role === 'implementer'
-                    ? this.limits.runImplementer(run)
-                    : this.limits.runReadOnly(run),
+            return await withEventOwner(
+                { agent: intent.role, taskId: intent.id },
+                () => blockOnLimit(this.store, this.runId, () =>
+                    intent.role === 'implementer'
+                        ? this.limits.runImplementer(run)
+                        : this.limits.runReadOnly(run),
+                ),
             );
         } finally {
             this.intents.delete(operation.taskId);
@@ -415,7 +428,7 @@ export function installOrchestrationPolicy(
     return instrument({
         observe: controller.observe,
         interceptor: controller.intercept,
-        dispose() {},
+        dispose() { clearProviderStats(options.conversationId); },
     });
 }
 

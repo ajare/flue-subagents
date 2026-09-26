@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstat, readFile, readlink, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
@@ -138,7 +138,7 @@ export async function preflightGitRepository(
         '--porcelain=v1',
         '-z',
         '--untracked-files=all',
-        '--ignore-submodules=none',
+        '--ignore-submodules=all',
     ]);
     const status = parseStatus(statusBefore);
     const clean = !status.indexDirty && !status.worktreeDirty;
@@ -162,7 +162,7 @@ export async function preflightGitRepository(
         '--porcelain=v1',
         '-z',
         '--untracked-files=all',
-        '--ignore-submodules=none',
+        '--ignore-submodules=all',
     ]);
     if (!statusBefore.equals(statusAfter)) {
         throw new GitPreflightError(
@@ -254,13 +254,13 @@ async function assertSupportedState(
         );
     }
     const stagedEntries = await gitBuffer(git, ['ls-files', '--stage', '-z']);
+    const headEntries = await gitBuffer(git, ['ls-tree', '-r', '-z', 'HEAD']);
     if (
-        splitNull(stagedEntries).some((entry) =>
-            entry.subarray(0, 7).equals(Buffer.from('160000 ')),
-        )
+        JSON.stringify(gitlinks(stagedEntries, 'index')) !==
+        JSON.stringify(gitlinks(headEntries, 'tree'))
     ) {
         throw unsupported(
-            'Repositories containing Git submodules are not supported',
+            'Modified Git submodule references are not supported',
         );
     }
 
@@ -319,7 +319,7 @@ async function fingerprintWorktree(
             '--no-ext-diff',
             '--no-textconv',
             '--no-renames',
-            '--ignore-submodules=none',
+            '--ignore-submodules=all',
             '--',
         ],
         hash,
@@ -434,6 +434,29 @@ async function gitBuffer(context: GitContext, args: string[]): Promise<Buffer> {
     return (await runGit(context, args)).stdout;
 }
 
+export async function trackedNonGitlinkPaths(
+    root: string,
+    env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+    const output = await gitBuffer({ cwd: root, env: gitEnvironment(env) }, [
+        'ls-files',
+        '--stage',
+        '-z',
+    ]);
+    const paths: string[] = [];
+    for (const entry of splitNull(output)) {
+        if (entry.subarray(0, 7).equals(Buffer.from('160000 '))) continue;
+        const tab = entry.indexOf(9);
+        if (tab < 0) throw unsupported('Malformed Git index entry');
+        const pathBytes = entry.subarray(tab + 1);
+        const path = pathBytes.toString('utf8');
+        if (!Buffer.from(path).equals(pathBytes))
+            throw unsupported('Non-UTF-8 repository paths are not supported');
+        paths.push(path);
+    }
+    return paths;
+}
+
 export function runGit(
     context: GitContext,
     args: string[],
@@ -516,6 +539,20 @@ function addField(hash: ReturnType<typeof createHash>, value: Buffer): void {
 
 function frozenFingerprint(value: string): GitStateFingerprint {
     return Object.freeze({ algorithm: 'sha256', value });
+}
+
+function gitlinks(value: Buffer, source: 'index' | 'tree'): string[] {
+    const result: string[] = [];
+    for (const entry of splitNull(value)) {
+        if (!entry.subarray(0, 7).equals(Buffer.from('160000 '))) continue;
+        const tab = entry.indexOf(9);
+        if (tab < 0) throw unsupported('Malformed Git submodule entry');
+        const metadata = entry.subarray(7, tab).toString('ascii').split(' ');
+        const objectId = source === 'index' ? metadata[0] : metadata[1];
+        if (!objectId) throw unsupported('Malformed Git submodule entry');
+        result.push(`${objectId}:${entry.subarray(tab + 1).toString('hex')}`);
+    }
+    return result.sort();
 }
 
 function splitNull(value: Buffer): Buffer[] {

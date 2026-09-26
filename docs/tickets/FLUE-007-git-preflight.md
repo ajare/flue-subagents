@@ -22,7 +22,9 @@ Ensure mutation starts only from a recognized and reproducible Git repository st
 `src/git-preflight.ts` performs read-only Git discovery, rejects unsafe
 repository states, and captures the canonical worktree and Git directories,
 filesystem identity, HEAD, branch/detached state, logical index contents,
-tracked worktree diffs, and all non-ignored untracked file contents.
+tracked worktree diffs, and all non-ignored untracked file contents. Unchanged
+submodule gitlinks remain part of the logical index while submodule working-tree
+contents are excluded.
 Length-delimited SHA-256 hashes provide
 separate index and worktree fingerprints plus one repository fingerprint.
 `assertGitFingerprint` rechecks that state for later publication guards.
@@ -30,7 +32,8 @@ separate index and worktree fingerprints plus one repository fingerprint.
 The CLI runs preflight before configuration, run creation, model connectivity,
 or agent execution. Repositories must be clean unless `--allow-dirty` is
 provided. Bare and unborn repositories, sparse checkouts, unresolved entries,
-submodules, and in-progress merge/rebase/sequencer operations fail closed.
+modified submodule references, and in-progress merge/rebase/sequencer
+operations fail closed.
 
 ## Acceptance criteria
 

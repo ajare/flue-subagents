@@ -14,6 +14,8 @@ import {
     lockRun,
 } from './resumption.ts';
 import { createOrchestrator } from './agents/orchestrator.ts';
+import { readStructuredResult } from './agents/structured-result.ts';
+import { recordPrompt } from './execution-telemetry.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
 import {
     CommitManager,
@@ -253,7 +255,9 @@ export async function runCli(
                             !['type', 'sequence', 'runId'].includes(key) &&
                             value !== undefined,
                     )
-                    .map(([key, value]) => `${key}: ${String(value)}`)
+                    .map(([key, value]) =>
+                        `${key}: ${key === 'ts' && typeof value === 'number' ? new Date(value).toISOString() : typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)}`,
+                    )
                     .join(' | ')}\n`,
             );
     };
@@ -495,7 +499,9 @@ export async function executeRequest(
                         options.onEvent?.({
                             type: 'command',
                             runId: run.id,
-                            timestamp,
+                            ts: timestamp,
+                            agent: record.agent,
+                            taskId: record.taskId,
                             command,
                             durationMs,
                             exitCode,
@@ -549,12 +555,27 @@ export async function executeRequest(
                               'Continue the interrupted objective using the existing conversation and workspace. Inspect partial work before retrying operations.'
                             : request.prompt;
                         for (let attempt = 0; ; attempt++) {
-                            const receipt = await handle.dispatch(prompt);
-                            const text = (
-                                await handle.read(receipt, {
-                                    signal: executionSignal,
-                                })
-                            ).text;
+                            const text = await recordPrompt(
+                                join(
+                                    store.runDirectory(run.id),
+                                    'execution-telemetry.jsonl',
+                                ),
+                                run.id,
+                                conversationId,
+                                async () => {
+                                    const receipt =
+                                        await handle.dispatch(prompt);
+                                    const reply = await handle.read(receipt, {
+                                        signal: executionSignal,
+                                    });
+                                    return JSON.stringify(
+                                        readStructuredResult(reply.metadata),
+                                    );
+                                },
+                                request.configuration.maxOutputTokens,
+                                request.configuration.contextWindow,
+                                options.onEvent,
+                            );
                             const decision = validateOrchestratorResult(text);
                             const latest = await patches.latest(run.id);
                             await patches.capture(

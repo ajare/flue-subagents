@@ -2,6 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import type { Sandbox, SandboxFactory, ShellResult } from '@flue/runtime';
 import type { CommandAuditSink } from '../command-audit.ts';
+import { currentEventOwner } from '../event-owner.ts';
 import { readOnlyLocal } from './read-only-local.ts';
 
 /** File API confinement plus workspace accounting. Shell remains trusted-local. */
@@ -159,7 +160,8 @@ export function workspaceLocal(options: {
                             clearInterval(timer);
                             await pending;
                             await options.commandAudit?.record({
-                                timestamp: startedAt.toISOString(),
+                                timestamp: startedAt.getTime(),
+                                ...currentEventOwner(),
                                 command,
                                 cwd,
                                 durationMs: Math.max(

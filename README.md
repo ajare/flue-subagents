@@ -19,8 +19,8 @@ npm ci
 npm run typecheck
 npm test
 npm link                        # optional: installs the flue-agent command
-export FLUE_AGENT_ENDPOINT=http://localhost:8080/v1
-export FLUE_AGENT_MODEL=local/ornith
+export FLUE_AGENT_ENDPOINT=http://localhost:8731/v1
+export FLUE_AGENT_MODEL=halogen/qwen-3.8-flash-next
 ```
 
 Without `npm link`, replace `flue-agent` with `node /absolute/path/to/src/cli.ts`.

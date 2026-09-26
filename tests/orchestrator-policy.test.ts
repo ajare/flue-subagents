@@ -102,6 +102,43 @@ test('terminal results enforce precise needs-input and completed shapes', () => 
     );
 });
 
+test('terminal results accept a single outer JSON fence without weakening validation', () => {
+    const decision = {
+        schemaVersion: 1,
+        status: 'completed',
+        summary: 'Approximately 187,700 physical lines, excluding submodules.',
+        questions: [],
+        failureWaivers: [],
+    };
+    const json = JSON.stringify(decision, null, 2);
+    for (const label of ['json', '']) {
+        const fenced = `\`\`\`${label}\n${json}\n\`\`\``;
+        assert.deepEqual(validateOrchestratorResult(fenced), decision);
+        assert.deepEqual(
+            validateOrchestratorResult(
+                ` \r\n${fenced.replaceAll('\n', '\r\n')}\r\n `,
+            ),
+            decision,
+        );
+    }
+    for (const invalid of [
+        `Here is the result:\n\`\`\`json\n${json}\n\`\`\``,
+        `\`\`\`json\n${json}\n\`\`\`\nExtra commentary`,
+        `\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``,
+        `\`\`\`json\n${json}\n${json}\n\`\`\``,
+        `\`\`\`json\n${json}`,
+        '```json\n{invalid}\n```',
+        '```json\n{}\n```',
+        '```json\n[]\n```',
+        `\`\`\`json\n${JSON.stringify({ ...decision, questions: ['Why?'] })}\n\`\`\``,
+    ]) {
+        assert.throws(
+            () => validateOrchestratorResult(invalid),
+            OrchestrationDefectError,
+        );
+    }
+});
+
 test('briefings reject omitted context and require review evidence', () => {
     assert.doesNotThrow(() =>
         assertSelfContainedBriefing('implementer', briefing()),

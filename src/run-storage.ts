@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { currentEventOwner } from './event-owner.ts';
 import {
     mkdir,
     lstat,
@@ -273,6 +274,7 @@ export class RunStore {
 
     /** Serialize updates in this process and replace the complete record atomically. */
     async update(id: string, update: UpdateRunInput): Promise<RunRecord> {
+        const owner = currentEventOwner();
         assertRunId(id);
         update = structuredClone(update);
         const previous = this.updates.get(id) ?? Promise.resolve();
@@ -291,7 +293,8 @@ export class RunStore {
                               ...current.ledger,
                               {
                                   sequence: current.ledger.length + 1,
-                                  at: updatedAt,
+                                  at: Date.parse(updatedAt),
+                                  ...owner,
                                   action: update.ledgerAction,
                               },
                           ]

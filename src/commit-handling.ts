@@ -5,11 +5,12 @@ import {
     gitEnvironment,
     preflightGitRepository,
     runGit,
+    trackedNonGitlinkPaths,
 } from './git-preflight.ts';
 import {
+    type FileImage,
     PatchManager,
     type PatchRevision,
-    type FileImage,
 } from './patch-publication.ts';
 import type { RunStore } from './run-storage.ts';
 
@@ -344,10 +345,10 @@ async function sourceFingerprint(
     root: string,
     env: NodeJS.ProcessEnv,
 ): Promise<string> {
-    const names = (
+    const tracked = await trackedNonGitlinkPaths(root, env);
+    const untracked = (
         await runGit({ cwd: root, env }, [
             'ls-files',
-            '--cached',
             '--others',
             '--exclude-standard',
             '-z',
@@ -355,8 +356,8 @@ async function sourceFingerprint(
     ).stdout
         .toString('utf8')
         .split('\0')
-        .filter(Boolean)
-        .sort();
+        .filter(Boolean);
+    const names = [...new Set([...tracked, ...untracked])].sort();
     const hash = createHash('sha256');
     for (const path of names) {
         hash.update(path).update('\0');

@@ -10,22 +10,22 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { test, type TestContext } from 'node:test';
+import { type TestContext, test } from 'node:test';
 import {
     DEFAULT_CONFIGURATION,
     restrictedAgentEnvironment,
 } from '../src/config.ts';
-import { workspaceLocal } from '../src/sandboxes/workspace-local.ts';
+import {
+    completionEligibility,
+    replayLedger,
+} from '../src/delegation-ledger.ts';
 import {
     assertGitFingerprint,
     preflightGitRepository,
 } from '../src/git-preflight.ts';
 import { PatchManager } from '../src/patch-publication.ts';
-import {
-    completionEligibility,
-    replayLedger,
-} from '../src/delegation-ledger.ts';
 import { RunStore } from '../src/run-storage.ts';
+import { workspaceLocal } from '../src/sandboxes/workspace-local.ts';
 import { WorkspaceManager } from '../src/workspaces.ts';
 import { createGitFixture } from './helpers/git.ts';
 
@@ -88,6 +88,31 @@ async function fixture(t: TestContext, dirty = false) {
     await patches.initialize(run.id, baseline);
     return { repo, baseline, store, run, workspaces, workspace, patches };
 }
+
+test('workspace and patch snapshots exclude unchanged submodules', async (t) => {
+    const repo = await createGitFixture(t);
+    const commit = await repo.git('rev-parse', 'HEAD');
+    await repo.git(
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `160000,${commit},ext/module`,
+    );
+    await repo.git('commit', '-m', 'Add submodule gitlink');
+    const baseline = await preflightGitRepository(repo.path, { env: repo.env });
+    const store = new RunStore({ root: join(dirname(repo.path), 'data') });
+    const run = await store.create({
+        repository: repo.path,
+        configuration: DEFAULT_CONFIGURATION,
+    });
+    const workspaces = new WorkspaceManager(store, repo.env);
+    await workspaces.create(run.id, baseline);
+    const patches = new PatchManager(store, repo.env);
+
+    await patches.initialize(run.id, baseline);
+
+    assert.deepEqual((await patches.latest(run.id))?.changes, []);
+});
 
 test('sandbox records file mutations and failed command side effects', async (t) => {
     const { patches, workspace, run, workspaces, repo } = await fixture(t);

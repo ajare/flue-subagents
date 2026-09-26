@@ -92,7 +92,7 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
             }),
             mode === 'malformed'
                 ? fauxAssistantMessage('not JSON')
-                : answer({
+                : tool('submit_orchestrator_result', {
                       schemaVersion: 1,
                       status: 'completed',
                       summary: 'Done',
@@ -116,6 +116,19 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
         if (mode === 'malformed') await assert.rejects(run());
         else await run();
         const record = await store.read(id);
+        assert.ok(record.ledger.every((event) => Number.isInteger(event.at)));
+        const audit = (await readFile(join(store.runDirectory(id), 'audit.ndjson'), 'utf8'))
+            .trim().split('\n').map((line) => JSON.parse(line));
+        assert.ok(audit.length > 0);
+        assert.ok(audit.every((entry) => Number.isInteger(entry.timestamp)));
+        assert.deepEqual(audit.map((entry) => entry.agent), ['implementer', 'reviewer']);
+        for (const entry of audit) {
+            assert.equal(typeof entry.taskId, 'string');
+            assert.ok(record.ledger.some((event) =>
+                event.agent === entry.agent && event.taskId === entry.taskId,
+            ));
+        }
+        assert.ok(record.ledger.some((event) => event.agent === 'orchestrator'));
         const failed = mode === 'rejected' || mode === 'malformed';
         assert.equal(
             record.status,
@@ -134,7 +147,17 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
                 (entry) => entry.result?.role === 'reviewer',
             ),
         );
-        assert.equal(events.length, 2);
+        const commands = events.filter((event) => 'type' in event && event.type === 'command');
+        const modelOutputs = events.filter((event) => 'event' in event && event.event === 'llm_output');
+        assert.equal(commands.length, 2);
+        assert.ok(modelOutputs.length > 0);
+        assert.ok(modelOutputs.every((event) => 'outputTokens' in event));
+        for (const event of commands) {
+            assert.ok('ts' in event && typeof event.ts === 'number');
+            assert.ok('agent' in event && typeof event.agent === 'string');
+            assert.ok('taskId' in event && typeof event.taskId === 'string');
+            assert.ok(!('timestamp' in event) && !('at' in event));
+        }
         assert.equal(
             (await repo.git('rev-parse', 'HEAD')) === before,
             mode !== 'commit',

@@ -26,10 +26,17 @@ planner failures may be waived only by an explicit terminal `failureWaivers`
 entry explaining why the work is unnecessary; implementer and reviewer
 failures are never waivable.
 
-The root returns a version 1 JSON decision with `completed`, `blocked`, or `needs_input`, a
-user-facing summary, clarification questions, and failure waivers. The
-application validates this decision and the ledger independently. A
-`needs_input` decision requires at least one precise question and causes the run
+The root must call `submit_orchestrator_result` with a schema-validated version 1
+decision: `completed`, `blocked`, or `needs_input`, a user-facing summary,
+clarification questions, and failure waivers. Tool validation also enforces
+cross-field rules before accepting the decision. A finish hook prevents plain
+text (including JSON text) from settling successfully, allowing at most two
+corrective continuations before failing closed. The result is stored in durable
+response metadata; the CLI reads that result, never assistant prose. Each new
+delivery clears the previous decision, including on resume. Application deadline
+and review/ledger checks remain independent and mandatory.
+
+A `needs_input` decision requires at least one precise question and causes the run
 and workspace to be retained for later continuation. A completed decision must
 have no questions. Mutation completion additionally requires current independent
 review; rejected completion triggers review/repair continuation within the same
