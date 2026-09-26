@@ -139,19 +139,25 @@ test('terminal results accept a single outer JSON fence without weakening valida
     }
 });
 
-test('briefings reject omitted context and require review evidence', () => {
+test('briefings default optional context to none and require core review evidence', () => {
     assert.doesNotThrow(() =>
         assertSelfContainedBriefing('implementer', briefing()),
+    );
+    assert.doesNotThrow(() =>
+        assertSelfContainedBriefing(
+            'implementer',
+            'Objective: Change behavior.\nRole task: Implement it.',
+        ),
     );
     assert.throws(
         () =>
             assertSelfContainedBriefing(
                 'implementer',
-                'Objective: Change behavior.\nRole task: Implement it.',
+                'Objective: Change behavior.',
             ),
         (error: unknown) =>
             error instanceof OrchestrationDefectError &&
-            error.missingSections.includes('Context and evidence'),
+            error.missingSections.includes('Role task'),
     );
     assert.throws(
         () => assertSelfContainedBriefing('reviewer', briefing()),
@@ -163,11 +169,90 @@ test('briefings reject omitted context and require review evidence', () => {
     assert.doesNotThrow(() =>
         assertSelfContainedBriefing(
             'reviewer',
-            briefing(`Plan: No separate plan was used.
+            `Objective: Review the change.
+Role task: Review revision abc.
+Plan: No separate plan was used.
 Diff: Obtain revision abc from the current workspace.
 Validation report: npm test passed with exit code 0.
-Known limitations and unresolved issues: None.`),
+Known limitations and unresolved issues: None.`,
         ),
+    );
+});
+
+test('implementer task boundary accepts the historical Changes to make briefing', async (t) => {
+    const { store, run, controller } = await fixture(t);
+    const task =
+        '### 1. Simulation RNG\nAdd a deterministic simulation RNG.\n\n### 2. Diagnostics\nExpose the active decision.';
+    controller.registerDelegation({
+        id: 'markdown-task',
+        role: 'implementer',
+        prompt: `Objective: Implement escalator walking.\n\n## Already implemented (do not modify)\nTag properties are done.\n\n## Changes to make\n${task}\n\n## Constraints\nDo not change pathfinding.\n\n## Verification\nRun the headless suite.`,
+    });
+    let calls = 0;
+    await controller.intercept(
+        { type: 'task', taskId: 'markdown-task' },
+        { instanceId: 'conversation' },
+        async () => {
+            calls++;
+            return { text: implementerResult };
+        },
+    );
+    assert.equal(calls, 1);
+    const ledger = (await store.read(run.id)).ledger;
+    const entry = replayLedger(ledger).delegations[0];
+    assert.equal(entry?.task, task);
+    assert.equal(entry?.result?.role, 'implementer');
+    assert.equal(entry?.failure, null);
+});
+
+test('Changes to make cannot replace missing content or reviewer task requirements', () => {
+    for (const prompt of [
+        'Objective: Implement it.\n## Changes to make\n\n## Constraints\nPreserve APIs.',
+        'Objective: Implement it.\n## Changes to make\nConstraints: Preserve APIs.',
+        'Objective: Implement it.\n## Changes to make\n## Verification\nRun tests.',
+        'Objective: Implement it.\n~~~markdown\nRole task: Example only.\n~~~',
+        'Objective: Implement it.\n```markdown\n## Changes to make\nExample only.\n```',
+        '## Changes to make\nImplement it.',
+    ]) {
+        assert.throws(
+            () => assertSelfContainedBriefing('implementer', prompt),
+            OrchestrationDefectError,
+        );
+    }
+    assert.throws(
+        () =>
+            assertSelfContainedBriefing(
+                'reviewer',
+                'Objective: Review.\n## Changes to make\nReview it.',
+            ),
+        (error: unknown) =>
+            error instanceof OrchestrationDefectError &&
+            error.missingSections.includes('Role task'),
+    );
+});
+
+test('Markdown briefing headings accept CRLF and preserve fenced task examples', async (t) => {
+    const { store, run, controller } = await fixture(t);
+    const task =
+        'Implement the example:\n```text\n## Constraints\nDo not interpret this as a briefing heading.\n```\nThen test it.';
+    const prompt =
+        `# Objective\nImplement behavior.\n## Role task:\n${task}\n## Verification\nRun tests.`.replaceAll(
+            '\n',
+            '\r\n',
+        );
+    controller.registerDelegation({
+        id: 'fenced-example',
+        role: 'implementer',
+        prompt,
+    });
+    await controller.intercept(
+        { type: 'task', taskId: 'fenced-example' },
+        { instanceId: 'conversation' },
+        async () => ({ text: implementerResult }),
+    );
+    assert.equal(
+        replayLedger((await store.read(run.id)).ledger).delegations[0]?.task,
+        task,
     );
 });
 
@@ -278,12 +363,12 @@ test('task-tool budget exhaustion blocks the run', async (t) => {
     );
 });
 
-test('missing task context is persisted as an orchestration failure', async (t) => {
+test('missing required task context is persisted as an orchestration failure', async (t) => {
     const { store, run, controller } = await fixture(t);
     controller.registerDelegation({
         id: 'incomplete',
         role: 'implementer',
-        prompt: 'Objective: Change behavior.\nRole task: Implement it.',
+        prompt: 'Objective: Change behavior.',
     });
     await assert.rejects(
         controller.intercept(

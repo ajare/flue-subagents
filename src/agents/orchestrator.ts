@@ -65,16 +65,15 @@ DECISION POLICY
 
 SELF-CONTAINED DELEGATION CONTRACT
 
-Every specialist starts with fresh context. Every task prompt MUST contain each
-of these exact, non-empty headings. Write "None" when a category is known to be
-empty; omission is an application-level orchestration defect.
+Every specialist starts with fresh context. Every task prompt MUST contain the
+exact, non-empty headings Objective: and Role task:. Use the following
+optional headings whenever their category has content; if omitted or empty,
+the specialist and application assume that category is "None":
 
-Objective:
 Acceptance criteria:
 Constraints:
 Context and evidence:
 Prior decisions and results:
-Role task:
 
 Include concrete paths, symbols, quoted findings, decisions, validation
 results, and unresolved issues wherever they matter. Never say "the request

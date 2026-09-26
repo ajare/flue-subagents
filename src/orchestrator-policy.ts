@@ -166,6 +166,7 @@ const COMMON_BRIEFING_SECTIONS = [
     'Prior decisions and results',
     'Role task',
 ] as const;
+const REQUIRED_COMMON_BRIEFING_SECTIONS = ['Objective', 'Role task'] as const;
 const REVIEW_BRIEFING_SECTIONS = [
     'Plan',
     'Diff',
@@ -178,8 +179,9 @@ const ALL_BRIEFING_SECTIONS = [
 ];
 
 /**
- * Reject context-poor handoffs at the application boundary. "None" is an
- * explicit value: omitting a section is never treated as an implicit answer.
+ * Reject context-poor handoffs at the application boundary. Objective and role
+ * task are always required (implementers may label the task "Changes to make").
+ * Omitted optional context sections mean "None".
  */
 export function assertSelfContainedBriefing(
     role: SubagentRole,
@@ -188,9 +190,12 @@ export function assertSelfContainedBriefing(
 ): void {
     const required =
         role === 'reviewer'
-            ? [...COMMON_BRIEFING_SECTIONS, ...REVIEW_BRIEFING_SECTIONS]
-            : COMMON_BRIEFING_SECTIONS;
-    const sections = parseBriefingSections(prompt);
+            ? [
+                  ...REQUIRED_COMMON_BRIEFING_SECTIONS,
+                  ...REVIEW_BRIEFING_SECTIONS,
+              ]
+            : REQUIRED_COMMON_BRIEFING_SECTIONS;
+    const sections = parseBriefingSections(prompt, role);
     const missing = required.filter((name) => !sections.get(name)?.trim());
     if (missing.length !== 0) {
         throw new OrchestrationDefectError(
@@ -200,24 +205,64 @@ export function assertSelfContainedBriefing(
     }
 }
 
-function parseBriefingSections(prompt: string): Map<string, string> {
+function parseBriefingSections(
+    prompt: string,
+    role: SubagentRole,
+): Map<string, string> {
     const sections = new Map<string, string>();
     const labels = new Set<string>(ALL_BRIEFING_SECTIONS);
     let current: string | undefined;
+    let level = 0;
+    let fence: string | undefined;
     for (const line of prompt.split(/\r?\n/u)) {
-        const separator = line.indexOf(':');
-        const candidate = separator < 0 ? '' : line.slice(0, separator).trim();
-        if (labels.has(candidate)) {
-            current = candidate;
-            sections.set(current, line.slice(separator + 1).trim());
-        } else if (current) {
-            sections.set(
-                current,
-                `${sections.get(current) ?? ''}\n${line}`.trim(),
-            );
+        // Code examples are section content, never briefing headings.
+        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        const inCode = fence !== undefined || marker !== null;
+        if (marker) {
+            if (!fence) fence = marker[1];
+            else if (
+                marker[1]?.[0] === fence[0] &&
+                marker[1].length >= fence.length &&
+                !marker[2]?.trim()
+            )
+                fence = undefined;
+        }
+        if (!inCode) {
+            const heading = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+            const text = heading?.[2] ?? line;
+            const separator = text.indexOf(':');
+            let candidate =
+                separator < 0
+                    ? heading
+                        ? text.trim()
+                        : ''
+                    : text.slice(0, separator).trim();
+            // The historical implementer briefing used this explicit task
+            // section instead of the canonical Role task label.
+            if (role === 'implementer' && candidate === 'Changes to make') {
+                candidate = 'Role task';
+            }
+            if (labels.has(candidate)) {
+                current = candidate;
+                level = heading?.[1]?.length ?? 0;
+                sections.set(
+                    current,
+                    separator < 0 ? '' : text.slice(separator + 1).trim(),
+                );
+                continue;
+            }
+            // Keep nested task subsections, but exclude sibling sections such
+            // as Constraints and Verification from the ledger task summary.
+            if (heading && (heading[1]?.length ?? 0) <= level)
+                current = undefined;
+        }
+        if (current) {
+            sections.set(current, `${sections.get(current) ?? ''}\n${line}`);
         }
     }
-    return sections;
+    return new Map(
+        [...sections].map(([name, content]) => [name, content.trim()]),
+    );
 }
 
 interface DelegationIntent {
@@ -371,7 +416,7 @@ export class OrchestrationPolicyController {
             id: intent.id,
             parentId: null,
             role: intent.role,
-            task: taskSummary(intent.prompt),
+            task: taskSummary(intent.prompt, intent.role),
         });
         try {
             this.limits.consumeDelegation(intent.role);
@@ -461,8 +506,8 @@ function taskResponseText(output: unknown): unknown {
     return output;
 }
 
-function taskSummary(prompt: string): string {
-    return parseBriefingSections(prompt).get('Role task') ?? prompt;
+function taskSummary(prompt: string, role: SubagentRole): string {
+    return parseBriefingSections(prompt, role).get('Role task') ?? prompt;
 }
 
 function isSubagentRole(value: unknown): value is SubagentRole {

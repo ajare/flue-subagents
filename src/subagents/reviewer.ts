@@ -16,16 +16,18 @@ CONTEXT REQUIREMENT
 
 Your task prompt is your entire briefing. It must include:
 
-- the engineering objective and acceptance criteria;
+- the engineering objective and your role task;
 - the relevant plan, or an explicit statement that no plan was used;
 - the complete diff to review (or an exact repository revision and paths that
   let you obtain it);
 - the implementer's validation report, including commands and outcomes; and
 - all known limitations and unresolved issues.
 
-You cannot see the parent conversation or another subagent's context. If
-required context is absent, do not infer it: return a blocked verdict and list
-what is missing.
+Use any stated acceptance criteria, constraints, context and evidence, or prior
+decisions and results; if one of those categories is not mentioned, assume it
+is "None". You cannot see the parent conversation or another subagent's context.
+If other required context is absent, do not infer it: return a blocked verdict
+and list what is missing.
 
 REVIEW METHOD
 

@@ -30,11 +30,20 @@ still satisfy the strict explorer schema. Both the ledger and the task response
 sent to the orchestrator use that canonical result; the raw model response stays
 in the runtime conversation. Other specialist contracts are unchanged.
 
-A missing heading is an `OrchestrationDefectError`, not a user ambiguity. The
-failed delegation remains auditable and cannot be waived. Other explorer or
-planner failures may be waived only by an explicit terminal `failureWaivers`
-entry explaining why the work is unnecessary; implementer and reviewer
-failures are never waivable.
+Every briefing requires non-empty `Objective:` and `Role task:` headings.
+The parser also accepts Markdown headings; for implementers only, an explicit
+`Changes to make` section is accepted as `Role task`. Its content is used for
+both validation and the ledger task summary. Nested subsections and code
+examples are retained, but headings inside fenced code cannot satisfy briefing
+requirements. An objective alone still does not supply a role task.
+`Acceptance criteria:`, `Constraints:`, `Context and evidence:`, and `Prior
+decisions and results:` are optional; an omitted or empty optional section is
+interpreted as `None`. Reviewer-specific plan, diff, validation, and limitations
+headings remain required. A missing required heading is an
+`OrchestrationDefectError`, not a user ambiguity. The failed delegation remains
+auditable and cannot be waived. Other explorer or planner failures may be
+waived only by an explicit terminal `failureWaivers` entry explaining why the
+work is unnecessary; implementer and reviewer failures are never waivable.
 
 The root must call `submit_orchestrator_result` with a schema-validated version 1
 decision: `completed`, `blocked`, or `needs_input`, a user-facing summary,

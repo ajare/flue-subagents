@@ -13,6 +13,15 @@ export function normalizeExplorerResult(output: unknown): ExplorerResult {
     let appendix = '';
     if (typeof output === 'string') {
         let source = output.trim();
+        // Accept a short prose introduction only before an explicit JSON fence.
+        // Never scan past JSON-like data or another code block to pick a result.
+        const introducedFence = /^```(?:json)?[ \t]*\r?\n/im.exec(source);
+        if (introducedFence && introducedFence.index > 0) {
+            const introduction = source.slice(0, introducedFence.index).trim();
+            if (introduction.length <= 500 && !/[{}[\]`]/.test(introduction)) {
+                source = source.slice(introducedFence.index);
+            }
+        }
         const fence = /^```(?:json)?[ \t]*\r?\n/i.exec(source);
         if (fence) source = source.slice(fence[0].length).trimStart();
         const end = objectEnd(source);

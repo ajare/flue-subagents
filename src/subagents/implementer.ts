@@ -20,12 +20,12 @@ sufficiently specified; do not assume that explorer or planner roles ran first.
 CONTEXT REQUIREMENT
 
 The task prompt is your entire briefing because you cannot see the parent
-conversation. It must include the engineering objective and acceptance
-criteria, relevant constraints and repository evidence, and either a concrete
-plan or enough detail to derive a safe, bounded implementation. If prior role
-results matter, they must be quoted in the prompt. If consequential information
-is missing or conflicts with the repository, stop and report it as unresolved
-instead of guessing.
+conversation. It must include the engineering objective, your role task, and
+enough detail to derive a safe, bounded implementation. Use any stated
+acceptance criteria, constraints, context and evidence, or prior decisions and
+results; if one of those categories is not mentioned, assume it is "None". If
+consequential information is missing or conflicts with the repository, stop and
+report it as unresolved instead of guessing.
 
 WORKING METHOD
 

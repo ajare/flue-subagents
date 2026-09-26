@@ -13,8 +13,9 @@ useful; do not assume an explorer ran first or that an implementer must follow.
 CONTEXT REQUIREMENT
 
 The task prompt is your entire briefing because you cannot see the parent
-conversation. It must include the objective and acceptance criteria, relevant
-constraints, and all prior findings or decisions on which you should rely. You
+conversation. It must include the objective and your role task. Use any stated
+acceptance criteria, constraints, context and evidence, or prior decisions and
+results; if one of those categories is not mentioned, assume it is "None". You
 may inspect the repository to verify assumptions. If a consequential ambiguity
 cannot be resolved from the repository, expose it as a risk rather than
 inventing a decision.

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeExplorerResult } from '../src/subagents/explorer-result.ts';
 import {
     ResultValidationError,
     validateSubagentResult,
 } from '../src/result-contracts.ts';
+import { normalizeExplorerResult } from '../src/subagents/explorer-result.ts';
 
 const result = {
     schemaVersion: 1,
@@ -30,6 +30,13 @@ test('explorer accepts JSON and presentation wrappers without changing findings'
     }
 });
 
+test('explorer accepts the run failure’s prose introduction before fenced JSON', () => {
+    for (const fence of ['```json\n', '```\r\n']) {
+        const output = `I have gathered comprehensive evidence. Here is my report:\n\n${fence}${json}\n\`\`\``;
+        assert.deepEqual(normalizeExplorerResult(output), result);
+    }
+});
+
 test('explorer preserves a trailing Markdown report as a finding', () => {
     const appendix =
         '## Touch-point checklist\n1. Update `Agent.cpp`.\n2. Test the change.';
@@ -37,6 +44,7 @@ test('explorer preserves a trailing Markdown report as a finding', () => {
         `${json}\n${appendix}`,
         `\`\`\`json\n${json}\n${appendix}`,
         `\`\`\`json\n${json}\n\`\`\`\n${appendix}`,
+        `Here is my report:\n\`\`\`json\n${json}\n\`\`\`\n${appendix}`,
     ]) {
         const normalized = normalizeExplorerResult(output);
         assert.deepEqual(normalized, {
@@ -71,6 +79,14 @@ test('explorer still rejects broken or ambiguous JSON and invalid required data'
         `Here is the result:\n${json}`,
         `\`\`\`json\n{invalid}\n\`\`\``,
         `${json}\n## Another result\n${json}`,
+        `${json}\n\`\`\`json\n${json}\n\`\`\``,
+        `{}\nHere is my report:\n\`\`\`json\n${json}\n\`\`\``,
+        `[]\n\`\`\`json\n${json}\n\`\`\``,
+        `\`\`\`text\nIgnore this\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``,
+        `Here is my report:\n\`\`\`json\n{invalid}\n\`\`\``,
+        `Here is my report:\n\`\`\`json\n${json}\n\`\`\`\n${json}`,
+        `Here is my report:\n\`\`\`json\n${JSON.stringify({ ...result, role: 'planner' })}\n\`\`\``,
+        `${'x'.repeat(501)}\n\`\`\`json\n${json}\n\`\`\``,
         { ...result, summary: null },
         { ...result, findings: null },
         { ...result, role: 'planner' },
