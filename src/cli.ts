@@ -16,6 +16,7 @@ import {
 import { createOrchestrator } from './agents/orchestrator.ts';
 import { readStructuredResult } from './agents/structured-result.ts';
 import { recordPrompt } from './execution-telemetry.ts';
+import { AgentNames } from './agent-names.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
 import {
     CommitManager,
@@ -475,6 +476,11 @@ export async function executeRequest(
             request.configuration,
             { signal },
         );
+        const agentNames = new AgentNames(join(store.runDirectory(run.id), 'agent-names.json'));
+        // Seed legacy runs too, so resuming never restarts a role's numbering.
+        for (const { action } of run.ledger) {
+            if (action.type === 'start') agentNames.get(action.id, action.role);
+        }
         const commandAudit = new FileCommandAuditLog(run.locations.auditLog);
         const orchestrator = createOrchestrator({
             configuration: request.configuration,
@@ -533,6 +539,7 @@ export async function executeRequest(
             runId: run.id,
             limits,
             patches,
+            agentNames,
         });
         try {
             const handle = init(orchestrator, { id: conversationId });
@@ -575,6 +582,7 @@ export async function executeRequest(
                                 request.configuration.maxOutputTokens,
                                 request.configuration.contextWindow,
                                 options.onEvent,
+                                agentNames,
                             );
                             const decision = validateOrchestratorResult(text);
                             const latest = await patches.latest(run.id);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { FlueObservation } from '@flue/runtime';
 import { ExecutionTelemetry } from '../src/execution-telemetry.ts';
+import { AgentNames } from '../src/agent-names.ts';
 
 test('records parallel tasks, model intervals, missing usage and prompt boundaries without content', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'telemetry-'));
@@ -87,7 +88,7 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
         assert.deepEqual(outputs.map((e) => e.contextUtilization), [0.6, 1, null, null, 0]);
         assert.ok(outputs.every((e) => e.contextWindow === 100));
         assert.deepEqual(outputs.map((e) => e.outputTokenPercentage), [10 / 16, 1, 5 / 16, null, 7 / 16]);
-        assert.deepEqual(outputs.map((e) => e.agent), ['explorer', 'planner', 'explorer', 'planner', 'orchestrator']);
+        assert.deepEqual(outputs.map((e) => e.agent), ['explorer-1', 'planner-1', 'explorer-1', 'planner-1', 'orchestrator']);
         assert.deepEqual(outputs.map((e) => e.taskId), ['a', 'b', 'a', 'b', undefined]);
         assert.ok(outputs.every((e) => Number.isInteger(e.ts)));
         assert.equal(published.length, outputs.length);
@@ -97,5 +98,28 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
         assert.ok(!raw.includes('ignored'));
     } finally {
         await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('telemetry shares names across prompt continuations and same-role tasks', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'telemetry-names-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const path = join(dir, 'events.jsonl');
+    const names = new AgentNames();
+    // The policy controller may observe a task before telemetry does.
+    assert.equal(names.get('a', 'explorer'), 'explorer-1');
+    for (const ids of [['a', 'b'], ['c']]) {
+        const telemetry = new ExecutionTelemetry(path, 'run', 'conversation', 16, 100, undefined, names);
+        for (const taskId of ids) {
+            telemetry.observe({
+                type: 'task_start', instanceId: 'conversation', taskId,
+                agent: 'explorer', timestamp: '2026-01-01T00:00:00.000Z',
+            } as FlueObservation);
+        }
+        telemetry.finish('interrupted');
+    }
+    const records = (await readFile(path, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    for (const type of ['subagent_start', 'subagent_end']) {
+        assert.deepEqual(records.filter((event) => event.type === type).map((event) => event.agent), ['explorer-1', 'explorer-2', 'explorer-3']);
     }
 });

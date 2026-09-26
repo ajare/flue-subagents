@@ -203,6 +203,49 @@ test('task boundary serializes implementers and records validated results', asyn
         ['one', 'two'],
     );
     assert.ok(entries.every((entry) => entry.result?.role === 'implementer'));
+    const ledger = (await store.read(run.id)).ledger;
+    assert.deepEqual(ledger.filter((entry) => entry.action.type === 'start').map((entry) => entry.agent), ['implementer-1', 'implementer-2']);
+    for (const entry of ledger) {
+        assert.equal(entry.agent, entry.taskId === 'one' ? 'implementer-1' : 'implementer-2');
+    }
+});
+
+test('explorer task boundary normalizes model formatting without losing findings', async (t) => {
+    const { store, run, controller } = await fixture(t);
+    const result = {
+        schemaVersion: 1,
+        role: 'explorer',
+        summary: 'Located the property workflow.',
+        findings: ['The registry owns properties.'],
+        evidence: [
+            { path: 'src/registry.ts', observation: 'Defines properties.' },
+        ],
+        openQuestions: [],
+    };
+    const checklist = '## Touch-point checklist\n1. Update the registry.';
+    // The historical response opened a JSON fence but never closed it, and
+    // appended Markdown after a complete, syntactically valid JSON object.
+    const raw = `\`\`\`json\n${JSON.stringify({
+        ...result,
+        evidence: [{ ...result.evidence[0], line: null, symbol: null }],
+    })}\n\n${checklist}`;
+    controller.registerDelegation({
+        id: 'explore',
+        role: 'explorer',
+        prompt: briefing(),
+    });
+    const output = await controller.intercept(
+        { type: 'task', taskId: 'explore' },
+        { instanceId: 'conversation' },
+        async () => ({ text: raw, metadata: { retained: true } }),
+    );
+    const expected = { ...result, findings: [...result.findings, checklist] };
+    assert.deepEqual(JSON.parse(output.text), expected);
+    assert.deepEqual(output.metadata, { retained: true });
+    assert.deepEqual(
+        replayLedger((await store.read(run.id)).ledger).delegations[0]?.result,
+        expected,
+    );
 });
 
 test('task-tool budget exhaustion blocks the run', async (t) => {

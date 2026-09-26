@@ -35,6 +35,13 @@ environment overrides can still exceed server policy.
 `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Mutating work remains
 serialized, so `implementerConcurrency` must be `1`.
 
+`runTimeoutMs` sets the application run deadline and is also passed to Flue as
+the orchestrator's `durability.timeoutMs`, overriding Flue's independent
+one-hour default. This applies when creating an orchestrator for a new run or
+resume. The application deadline remains the overall limit across delegations
+and continuation/review attempts; dispatching another response does not extend
+that application deadline.
+
 Before creating a workspace, callers must run `checkModelConnectivity()`.
 Failures are reported as `InfrastructureError` with code `model_unavailable`.
 `configurationForDiagnostics()` returns the complete effective configuration;

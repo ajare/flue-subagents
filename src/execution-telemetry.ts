@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { type FlueObservation, observe } from '@flue/runtime';
 import { takeProviderStats } from './provider-stats.ts';
+import { AgentNames } from './agent-names.ts';
 
 interface Span {
     startedAt: string;
@@ -22,6 +23,7 @@ export class ExecutionTelemetry {
     private onEvent?: (event: object) => void;
     private maxOutputTokens: number;
     private contextWindow: number;
+    private readonly agentNames: AgentNames;
 
     constructor(
         path: string,
@@ -30,7 +32,9 @@ export class ExecutionTelemetry {
         maxOutputTokens: number,
         contextWindow: number,
         onEvent?: (event: object) => void,
+        agentNames = new AgentNames(),
     ) {
+        this.agentNames = agentNames;
         if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
             throw new RangeError('maxOutputTokens must be a positive integer');
         }
@@ -73,12 +77,12 @@ export class ExecutionTelemetry {
                 startedAt: event.timestamp,
                 outputTokens: 0,
                 usageComplete: true,
-                agent: event.agent,
+                agent: this.agentNames.get(event.taskId, event.agent),
             });
             this.record({
                 type: 'subagent_start',
                 taskId: event.taskId,
-                agent: event.agent,
+                agent: this.agentNames.get(event.taskId, event.agent),
                 startedAt: event.timestamp,
             });
         } else if (event.type === 'turn_request' && !event.taskId) {
@@ -158,7 +162,7 @@ export class ExecutionTelemetry {
             this.record({
                 type: 'subagent_end',
                 taskId: event.taskId,
-                agent: event.agent,
+                agent: this.agentNames.get(event.taskId, event.agent),
                 ...span,
                 startedAt:
                     span?.startedAt ??
@@ -208,8 +212,9 @@ export async function recordPrompt<T>(
     maxOutputTokens: number,
     contextWindow: number,
     onEvent?: (event: object) => void,
+    agentNames?: AgentNames,
 ): Promise<T> {
-    const telemetry = new ExecutionTelemetry(path, runId, conversationId, maxOutputTokens, contextWindow, onEvent);
+    const telemetry = new ExecutionTelemetry(path, runId, conversationId, maxOutputTokens, contextWindow, onEvent, agentNames);
     const unsubscribe = observe(telemetry.observe);
     let status: 'completed' | 'interrupted' = 'interrupted';
     try {

@@ -121,9 +121,14 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
             .trim().split('\n').map((line) => JSON.parse(line));
         assert.ok(audit.length > 0);
         assert.ok(audit.every((entry) => Number.isInteger(entry.timestamp)));
-        assert.deepEqual(audit.map((entry) => entry.agent), ['implementer', 'reviewer']);
+        assert.deepEqual(audit.map((entry) => entry.agent), ['implementer-1', 'reviewer-1']);
+        const telemetry = (await readFile(join(store.runDirectory(id), 'execution-telemetry.jsonl'), 'utf8'))
+            .trim().split('\n').map((line) => JSON.parse(line));
         for (const entry of audit) {
             assert.equal(typeof entry.taskId, 'string');
+            const taskEvents = telemetry.filter((event) => event.taskId === entry.taskId);
+            assert.ok(taskEvents.length > 0);
+            assert.ok(taskEvents.every((event) => event.agent === entry.agent));
             assert.ok(record.ledger.some((event) =>
                 event.agent === entry.agent && event.taskId === entry.taskId,
             ));

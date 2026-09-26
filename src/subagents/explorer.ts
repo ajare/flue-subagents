@@ -50,7 +50,10 @@ this exact shape:
   "openQuestions": ["question that could not be answered"]
 }
 
-Omit optional line and symbol fields when unavailable. Empty arrays are allowed.
+Put all requested report sections and checklists inside findings (as strings),
+not after the JSON object. Omit optional line and symbol fields when unavailable;
+do not use null. Empty arrays are allowed. The application validates your result
+before passing it to the orchestrator; prose alone cannot complete the task.
 `;
 }
 

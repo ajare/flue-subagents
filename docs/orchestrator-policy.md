@@ -20,6 +20,16 @@ role-specific result before persisting completion. Thus a direct model call to
 Flue's built-in `task` tool cannot bypass application limits, writer
 serialization, the durable ledger, or structured-result validation.
 
+Explorer results have a presentation adapter at this boundary: it accepts a
+leading JSON object with an optional Markdown fence (including a missing closing
+fence), and preserves a trailing Markdown report headed with `#` as an additional
+finding. Explicit `null` values for optional evidence `line` and `symbol` fields
+are omitted. Required fields are never inferred, broken JSON is not repaired,
+and ambiguous multiple result objects are rejected. The normalized result must
+still satisfy the strict explorer schema. Both the ledger and the task response
+sent to the orchestrator use that canonical result; the raw model response stays
+in the runtime conversation. Other specialist contracts are unchanged.
+
 A missing heading is an `OrchestrationDefectError`, not a user ambiguity. The
 failed delegation remains auditable and cannot be waived. Other explorer or
 planner failures may be waived only by an explicit terminal `failureWaivers`

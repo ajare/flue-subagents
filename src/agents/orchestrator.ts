@@ -131,14 +131,20 @@ export function createOrchestrator(options: ConfiguredOrchestratorOptions) {
     const cwd = options.cwd ?? process.cwd();
     const environment = restrictedAgentEnvironment(options.hostEnvironment);
 
-    return function ConfiguredOrchestrator() {
+    function ConfiguredOrchestrator() {
         return renderOrchestrator(
             options.configuration,
             cwd,
             environment,
             options.sandbox,
         );
+    }
+    // Flue has its own one-hour submission deadline unless explicitly set.
+    // Bind it before registration so admission/recovery use the run's value.
+    ConfiguredOrchestrator.durability = {
+        timeoutMs: options.configuration.runTimeoutMs,
     };
+    return ConfiguredOrchestrator;
 }
 
 export function Orchestrator() {
@@ -148,6 +154,10 @@ export function Orchestrator() {
         restrictedAgentEnvironment(),
     );
 }
+
+Orchestrator.durability = {
+    timeoutMs: DEFAULT_CONFIGURATION.runTimeoutMs,
+};
 
 function renderOrchestrator(
     configuration: AgentConfiguration,

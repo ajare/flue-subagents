@@ -22,6 +22,8 @@ import { withEventOwner } from './event-owner.ts';
 import { clearProviderStats, withProviderStats } from './provider-stats.ts';
 import type { PatchManager } from './patch-publication.ts';
 import { ReviewBoundary } from './review-gating.ts';
+import { normalizeExplorerResult } from './subagents/explorer-result.ts';
+import { AgentNames } from './agent-names.ts';
 
 const text = v.pipe(v.string(), v.minLength(1));
 export const orchestratorResultSchema = v.strictObject({
@@ -230,6 +232,7 @@ export interface OrchestrationPolicyControllerOptions {
     runId: string;
     limits: OrchestrationLimits;
     patches?: PatchManager;
+    agentNames?: AgentNames;
 }
 
 /**
@@ -244,6 +247,7 @@ export class OrchestrationPolicyController {
     private readonly limits: OrchestrationLimits;
     private readonly intents = new Map<string, DelegationIntent>();
     private readonly boundary = new ReviewBoundary();
+    private readonly agentNames: AgentNames;
     private readonly patches?: PatchManager;
 
     constructor(options: OrchestrationPolicyControllerOptions) {
@@ -252,6 +256,7 @@ export class OrchestrationPolicyController {
         this.runId = options.runId;
         this.limits = options.limits;
         this.patches = options.patches;
+        this.agentNames = options.agentNames ?? new AgentNames();
     }
 
     observe = (event: FlueObservation): void => {
@@ -278,6 +283,7 @@ export class OrchestrationPolicyController {
 
     /** Public for deterministic adapters and tests that do not use observe(). */
     registerDelegation(intent: DelegationIntent): void {
+        this.agentNames.get(intent.id, intent.role);
         this.intents.set(intent.id, { ...intent });
     }
 
@@ -316,7 +322,7 @@ export class OrchestrationPolicyController {
                 : this.execute(intent, next);
         try {
             return await withEventOwner(
-                { agent: intent.role, taskId: intent.id },
+                { agent: this.agentNames.get(intent.id, intent.role), taskId: intent.id },
                 () => blockOnLimit(this.store, this.runId, () =>
                     intent.role === 'implementer'
                         ? this.limits.runImplementer(run)
@@ -391,11 +397,23 @@ export class OrchestrationPolicyController {
             }
             if (!outcome.ok) throw outcome.error;
             const output = outcome.value;
-            const result = validateSubagentResult(
-                intent.role,
-                taskResponseText(output),
-            );
+            const result =
+                intent.role === 'explorer'
+                    ? normalizeExplorerResult(taskResponseText(output))
+                    : validateSubagentResult(intent.role, taskResponseText(output));
             await append({ type: 'result', id: intent.id, result });
+            if (intent.role === 'explorer') {
+                // Flue forwards this text as the task tool result. Do not send
+                // the unvalidated presentation back to the orchestrator.
+                const text = JSON.stringify(result);
+                return (
+                    typeof output === 'object' && output !== null && 'text' in output
+                        ? { ...output, text }
+                        : typeof output === 'string'
+                          ? text
+                          : result
+                ) as T;
+            }
             return output;
         } catch (error) {
             if (error instanceof ResultValidationError) {
