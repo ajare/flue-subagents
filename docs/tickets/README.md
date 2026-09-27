@@ -15,6 +15,7 @@
 4. **Quality and publication:** FLUE-016–017
 5. **Operations:** FLUE-018–019
 6. **Acceptance:** FLUE-020
+7. **Follow-up defects:** FLUE-021+
 
 ## Tickets
 
@@ -40,6 +41,9 @@
 | [FLUE-018](FLUE-018-cancellation-resumption.md) | Implement cancellation and safe resumption | XL | FLUE-006, FLUE-008, FLUE-013, FLUE-015 |
 | [FLUE-019](FLUE-019-reporting.md) | Implement reporting and run-management commands | L | FLUE-006, FLUE-013, FLUE-016, FLUE-018 |
 | [FLUE-020](FLUE-020-acceptance.md) | Add behavioral evaluations, end-to-end tests, and documentation | XL | FLUE-003, FLUE-017, FLUE-018, FLUE-019 |
+| [FLUE-021](FLUE-021-delegation-briefing-preflight.md) | Preflight delegation briefings before starting sub-agents | M | FLUE-013, FLUE-015, FLUE-019 |
+| [FLUE-022](FLUE-022-runtime-malformed-result-correction.md) | Correct malformed runtime sub-agent results in place | L | FLUE-010, FLUE-013, FLUE-015, FLUE-021 |
+| [FLUE-023](FLUE-023-truncated-subagent-result-recovery.md) | Recover from output-limit-truncated sub-agent results | M | FLUE-010, FLUE-014, FLUE-019, FLUE-022 |
 
 ## Critical path
 

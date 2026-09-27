@@ -31,6 +31,42 @@ See [configuration](docs/configuration.md) for project JSON, environment overrid
 context/output limits, timeouts, concurrency, and budgets. Configuration is read
 from the target repository, not necessarily the agent's installation directory.
 
+## Prometheus metrics
+
+Set `FLUE_METRICS_PORT=9464` when starting or resuming a run to expose
+`http://127.0.0.1:9464/metrics` (GET). Disabled by default; the listener is
+loopback-only and closes when execution finishes. Use distinct ports for
+concurrent CLI processes. A port already in use fails the run.
+
+```sh
+FLUE_METRICS_PORT=9464 flue-agent "Explain the parser architecture"
+# From another terminal while the run is executing:
+curl http://127.0.0.1:9464/metrics
+```
+
+All series have `run_id`, `agent_name` (e.g. `explorer-1`), and `agent_type`
+(e.g. `explorer`) labels, including the `orchestrator`:
+
+- `flue_agent_active`: gauge, 1 while executing, 0 after completion.
+- `flue_agent_index`: gauge containing the agent's one-based creation index
+  (orchestrator 1, then 2, 3, and so on); emitted only while that agent runs.
+- `flue_agent_status`: separate one-hot gauge with a `status` label:
+  `running`, `completed`, `failed`, or `interrupted`.
+- `flue_agent_context_tokens`: gauge containing the latest reported input
+  context (prompt) size for the agent, including cached tokens.
+- `flue_agent_output_tokens_total`: counter of reported output tokens;
+  missing provider usage is not estimated.
+
+The context gauge appears after an agent's first turn with valid provider usage
+and retains the latest valid value when later usage is unavailable. Agents
+appear when execution starts, not while queued. Terminal agents remain
+visible until endpoint shutdown except for `flue_agent_index`, whose series is
+removed when its agent stops. Status describes execution, not review approval
+or the final run outcome. Metrics cover this invocation only (not historical
+runs), contain no prompt/output content, and reset on process restart/resume.
+Choose a scrape interval appropriate for short-lived agents; a scrape can miss
+an entire short run. Per-agent names create new time series for each delegation.
+
 ## Run
 
 See the [prompt examples guide](docs/prompt-examples.md) for repository questions,

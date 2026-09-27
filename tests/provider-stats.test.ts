@@ -4,7 +4,10 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { createExecutionRequest, executeRequest } from '../src/cli.ts';
 import { RunStore } from '../src/run-storage.ts';
-import { createModelProvider } from '../src/model-provider.ts';
+import {
+    checkModelConnectivity,
+    createModelProvider,
+} from '../src/model-provider.ts';
 import { buildReport, formatReport } from '../src/reporting.ts';
 import {
     statsFetch,
@@ -89,6 +92,21 @@ test('stream stats survive fragmented SSE, duplicate metadata and concurrent tur
 
 test('real provider and runtime deliver server statistics on llm_output', async (t) => {
     const server = createServer(async (request, response) => {
+        if (request.method === 'GET' && request.url === '/v1/models') {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(
+                JSON.stringify({
+                    object: 'list',
+                    data: [
+                        {
+                            id: 'halogen-qwen3.8-flash-next',
+                            max_tokens_cap: 65_536,
+                        },
+                    ],
+                }),
+            );
+            return;
+        }
         for await (const _chunk of request) {
             /* consume request */
         }
@@ -155,8 +173,13 @@ test('real provider and runtime deliver server statistics on llm_output', async 
     let runId = '';
     await executeRequest(request, {
         store,
-        onReport: (report) => { runId = report.id; },
-        modelTransport: { check: async () => {}, create: createModelProvider },
+        onReport: (report) => {
+            runId = report.id;
+        },
+        modelTransport: {
+            check: checkModelConnectivity,
+            create: createModelProvider,
+        },
         onEvent: (event) => events.push(event),
     });
     const event = events.find(
@@ -173,7 +196,15 @@ test('real provider and runtime deliver server statistics on llm_output', async 
     assert.match(formatReport(report), /Performance summary:\nWall-clock time: .* s\norchestrator: 36\.76 token\/s/);
     assert.deepEqual(event.timings, timings);
     assert.deepEqual(event.usage, usage);
-    assert.ok('contextTokens' in event && 'contextUtilization' in event);
+    assert.ok(
+        'contextTokens' in event &&
+            'contextUtilization' in event &&
+            'providerMaxOutputTokens' in event,
+    );
     assert.equal(event.contextTokens, usage.prompt_tokens);
-    assert.equal(event.contextUtilization, usage.prompt_tokens / request.configuration.contextWindow);
+    assert.equal(
+        event.contextUtilization,
+        usage.prompt_tokens / request.configuration.contextWindow,
+    );
+    assert.equal(event.providerMaxOutputTokens, 65_536);
 });

@@ -1,9 +1,11 @@
-import { useSpecialistResult } from '../agents/specialist-result.ts';
 import { defineSubagent, useTool } from '@flue/runtime';
+import { useSpecialistResult } from '../agents/specialist-result.ts';
+import { readGitHubIssue } from '../tools/issue-tracker-tools.ts';
 import { runReviewCommand } from '../tools/review-tools.ts';
 
 function Reviewer() {
     useSpecialistResult('reviewer');
+    useTool(readGitHubIssue);
     useTool(runReviewCommand);
 
     return `
@@ -34,7 +36,9 @@ and list what is missing.
 REVIEW METHOD
 
 1. Inspect the diff and relevant surrounding code yourself. Treat supplied
-   summaries and implementer claims only as leads, not as evidence.
+   summaries and implementer claims only as leads, not as evidence. Use
+   read_github_issue when the objective references an issue whose full contract
+   is needed for independent review.
 2. Check correctness, regressions, security, error handling, compatibility,
    scope, and test coverage as relevant to the objective.
 3. Use review_run_command for focused, non-mutating validation when useful.

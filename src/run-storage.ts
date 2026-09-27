@@ -14,7 +14,7 @@ import { homedir, platform } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { assertReviewApproval } from './review-gating.ts';
-import type { AgentConfiguration } from './config.ts';
+import { type AgentConfiguration, DEFAULT_CONFIGURATION } from './config.ts';
 import {
     freezeLedger,
     replayLedger,
@@ -422,7 +422,17 @@ function validateConfiguration(
         'retentionMs',
         'workspaceLimitBytes',
     ];
-    assertKeys(value, [...stringKeys, ...numberKeys]);
+    const presentationKeys = ['resultMaxStringLength', 'resultMaxCollectionItems', 'resultMaxLength'] as const;
+    // Version-1 snapshots may predate these fields. Normalize before checking
+    // required keys so readers (including startup cleanup) accept legacy runs.
+    for (const key of presentationKeys) {
+        if (!(key in value)) value[key] = DEFAULT_CONFIGURATION[key];
+    }
+    assertKeys(value, [...stringKeys, ...numberKeys, ...presentationKeys]);
+    for (const key of presentationKeys) {
+        if (!Number.isSafeInteger(value[key]) || (value[key] as number) <= 0)
+            throw invalidRecord(`configuration.${key} must be a positive integer`);
+    }
     for (const key of stringKeys)
         requiredString(value[key], `configuration.${key}`);
     for (const key of numberKeys) {

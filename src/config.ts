@@ -10,6 +10,9 @@ export interface AgentConfiguration {
     endpoint: string;
     contextWindow: number;
     maxOutputTokens: number;
+    resultMaxStringLength: number;
+    resultMaxCollectionItems: number;
+    resultMaxLength: number;
     reasoningEffort: ReasoningEffort;
     readOnlyConcurrency: number;
     implementerConcurrency: number;
@@ -34,6 +37,9 @@ export const DEFAULT_CONFIGURATION: Readonly<AgentConfiguration> =
         contextWindow: 262_144,
         // Output budget is separate from context size and must fit server policy.
         maxOutputTokens: 65_536,
+        resultMaxStringLength: 4000,
+        resultMaxCollectionItems: 128,
+        resultMaxLength: 48000,
         reasoningEffort: 'high',
         readOnlyConcurrency: 4,
         implementerConcurrency: 1,
@@ -57,6 +63,9 @@ const ENVIRONMENT_KEYS: Readonly<Record<keyof AgentConfiguration, string>> = {
     endpoint: 'FLUE_AGENT_ENDPOINT',
     contextWindow: 'FLUE_AGENT_CONTEXT_WINDOW',
     maxOutputTokens: 'FLUE_AGENT_MAX_OUTPUT_TOKENS',
+    resultMaxStringLength: 'FLUE_AGENT_RESULT_MAX_STRING_LENGTH',
+    resultMaxCollectionItems: 'FLUE_AGENT_RESULT_MAX_COLLECTION_ITEMS',
+    resultMaxLength: 'FLUE_AGENT_RESULT_MAX_LENGTH',
     reasoningEffort: 'FLUE_AGENT_REASONING_EFFORT',
     readOnlyConcurrency: 'FLUE_AGENT_READ_ONLY_CONCURRENCY',
     implementerConcurrency: 'FLUE_AGENT_IMPLEMENTER_CONCURRENCY',

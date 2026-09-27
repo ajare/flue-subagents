@@ -10,6 +10,9 @@ host files. Restricted command environments reduce accidental credential
 inheritance but do not prevent reading credentials from disk. Shell commands,
 build scripts, tests and commit hooks execute with host-user permissions.
 Read-only role capabilities are application policy, not an OS security boundary.
+The structured `read_github_issue` capability invokes the authenticated local
+`gh` CLI for the current repository only; issue content is external input and is
+safe only under the trusted-prompt/trusted-repository assumptions above.
 
 Publication fingerprints, revision-bound review and commit checks protect the
 normal workflow against stale or rejected changes. They are not guarantees

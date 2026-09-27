@@ -11,6 +11,7 @@ import {
     parseCliArguments,
     runCli,
 } from '../src/cli.ts';
+import { autoCompactionReserveTokens } from '../src/agents/orchestrator.ts';
 import { createGitFixture } from './helpers/git.ts';
 
 async function* input(value: string) {
@@ -126,6 +127,54 @@ test('dirty repositories are rejected before execution unless explicitly allowed
         0,
     );
     assert.equal(calls, 1);
+});
+
+test('--fail-fast is opt-in and reaches the execution request', async (t) => {
+    const fixture = await createGitFixture(t);
+    const requests: ExecutionRequest[] = [];
+    const execute = async (request: ExecutionRequest) => {
+        requests.push(request);
+        return undefined;
+    };
+
+    await runCli(['--repo', fixture.path, 'work'], { execute });
+    await runCli(['--fail-fast', '--repo', fixture.path, 'work'], {
+        execute,
+    });
+
+    assert.equal(requests[0]?.failFast, false);
+    assert.equal(requests[1]?.failFast, true);
+    assert.match(HELP, /--fail-fast.*default: off/u);
+});
+
+test('--auto-compaction accepts a context percentage and rejects invalid thresholds', async (t) => {
+    const fixture = await createGitFixture(t);
+    const requests: ExecutionRequest[] = [];
+    const execute = async (request: ExecutionRequest) => {
+        requests.push(request);
+        return undefined;
+    };
+
+    await runCli(['--auto-compaction', '70', '--repo', fixture.path, 'work'], {
+        execute,
+    });
+    await runCli(['--auto-compaction=65.5', '--repo', fixture.path, 'work'], {
+        execute,
+    });
+
+    assert.equal(requests[0]?.autoCompactionPercent, 70);
+    assert.equal(requests[1]?.autoCompactionPercent, 65.5);
+    assert.equal(autoCompactionReserveTokens(262_144, 70), 78_644);
+    for (const value of ['0', '100', 'not-a-number']) {
+        assert.throws(
+            () => parseCliArguments([`--auto-compaction=${value}`, 'work']),
+            /greater than 0 and less than 100/u,
+        );
+    }
+    assert.throws(
+        () => parseCliArguments(['--auto-compaction']),
+        /requires a percentage/u,
+    );
 });
 
 test('--commit records explicit commit authority independently of prompt wording', async (t) => {

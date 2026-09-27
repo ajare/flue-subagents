@@ -39,7 +39,7 @@ export function publicEvents(run: RunRecord) {
             task: entry?.task,
             contractError: entry?.malformedResults.length ? {
                 status: entry.result ? 'recovered' : entry.failure ? 'terminal' : 'correcting',
-                attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues })),
+                attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues, ...attempt.diagnostics })),
             } : undefined,
             durationMs: entry?.completedAt
                 ? Date.parse(entry.completedAt) - Date.parse(entry.startedAt)
@@ -94,7 +94,8 @@ export async function buildReport(store: RunStore, id: string) {
             role: entry.role,
             taskId: entry.id,
             status: entry.result ? 'recovered' : entry.failure ? 'terminal' : 'correcting',
-            attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues })),
+            agent: run.ledger.find(event => event.action.type === 'start' && event.action.id === entry.id)?.agent ?? entry.role,
+            attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues, ...attempt.diagnostics })),
         })),
         delegationDiagnostics: await loadDelegationDiagnostics(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         agentPerformance: await loadPerformanceSummary(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
@@ -143,6 +144,8 @@ export function formatReport(report: RunReport): string {
         ...report.delegationDiagnostics.map((event) =>
             `${event.event}: ${event.role ?? event.agent} — ${event.reasonCode}: ${event.message}${event.missingSections.length ? ` (${event.missingSections.join(', ')})` : ''}`,
         ),
+        ...report.resultContractDiagnostics.map(diagnostic =>
+            `Result contract ${diagnostic.status}: ${diagnostic.agent} (${diagnostic.taskId}) — ${diagnostic.attempts.map(attempt => attempt.reasonCode ?? 'invalid_subagent_result').join(' → ')}`),
         `Changed files: ${report.changedFiles.join(', ') || 'none'}`,
         ...report.validation.map(
             (check) =>

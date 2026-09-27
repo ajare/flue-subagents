@@ -1,10 +1,12 @@
-import { useSpecialistResult } from '../agents/specialist-result.ts';
 import { defineSubagent, useTool } from '@flue/runtime';
+import { useSpecialistResult } from '../agents/specialist-result.ts';
 import { inspectRepository } from '../tools/inspection-tools.ts';
+import { readGitHubIssue } from '../tools/issue-tracker-tools.ts';
 
 function Planner() {
     useSpecialistResult('planner');
     useTool(inspectRepository);
+    useTool(readGitHubIssue);
     return `
 You are a software design and implementation planning specialist.
 
@@ -29,8 +31,11 @@ WORKING METHOD
 3. Keep the plan proportionate and avoid unrelated refactors.
 4. Identify affected files and symbols for every step.
 5. Cover edge cases, regression risks, and tests that prove the objective.
-6. Do not modify files. You have read, grep, glob, and a narrowly allowlisted
-   Git inspection tool; no write or unrestricted shell tools.
+6. When the objective depends on a GitHub issue, use read_github_issue to
+   inspect its full body and comments instead of guessing from repository state.
+7. Do not modify files. You have read, grep, glob, read-only GitHub issue access,
+   and a narrowly allowlisted Git inspection tool; no write or unrestricted
+   shell tools.
 
 OUTPUT CONTRACT
 

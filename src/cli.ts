@@ -16,6 +16,7 @@ import {
 import { createOrchestrator } from './agents/orchestrator.ts';
 import { readStructuredResult } from './agents/structured-result.ts';
 import { recordPrompt } from './execution-telemetry.ts';
+import { AgentMetrics, metricsPort, startMetricsServer } from './metrics.ts';
 import { AgentNames } from './agent-names.ts';
 import { ConsoleLog } from './console-log.ts';
 import { FileCommandAuditLog } from './command-audit.ts';
@@ -68,6 +69,10 @@ export interface ExecutionRequest {
     repositoryState: GitPreflightResult;
     /** Captured from the original user input, never inferred from agent output. */
     commitRequest?: CommitRequest;
+    /** Stop orchestration after the first started sub-agent failure. */
+    failFast?: boolean;
+    /** Context utilization percentage that triggers automatic compaction. */
+    autoCompactionPercent?: number;
 }
 
 export type ExecuteRequest = (
@@ -100,6 +105,8 @@ interface ParsedArguments {
     prompt?: string;
     allowDirty: boolean;
     commit: boolean;
+    failFast: boolean;
+    autoCompactionPercent?: number;
 }
 
 export const HELP = `Usage:
@@ -107,8 +114,8 @@ export const HELP = `Usage:
   flue-agent inspect <run-id> [--json]
   flue-agent cleanup <run-id> | cleanup --expired
   flue-agent resume <run-id> [answer] [--json]
-  flue-agent [--repo <path>] [--allow-dirty] [--commit] "<prompt>"
-  printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty] [--commit]
+  flue-agent [--repo <path>] [--allow-dirty] [--commit] [--fail-fast] [--auto-compaction <percent>] "<prompt>"
+  printf '%s' "<prompt>" | flue-agent [--repo <path>] [--allow-dirty] [--commit] [--fail-fast] [--auto-compaction <percent>]
 
 Submit one engineering objective for autonomous execution.
 
@@ -117,6 +124,9 @@ Options:
   --repo <path>  Repository to operate on (default: current directory)
   --allow-dirty  Permit and fingerprint staged, unstaged, and untracked changes
   --commit       Commit the approved published patch (hooks run normally)
+  --fail-fast    End the run when any sub-agent fails (default: off)
+  --auto-compaction <percent>
+                 Compact when context reaches this percentage (exclusive 0–100)
   -h, --help     Show this help
   -v, --version  Show the package version
 
@@ -133,6 +143,8 @@ export function parseCliArguments(
     let prompt: string | undefined;
     let allowDirty = false;
     let commit = false;
+    let failFast = false;
+    let autoCompactionPercent: number | undefined;
     let positionalOnly = false;
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -142,13 +154,27 @@ export function parseCliArguments(
             continue;
         }
         if (!positionalOnly && (argument === '--help' || argument === '-h')) {
-            return { action: 'help', repo, allowDirty, commit };
+            return {
+                action: 'help',
+                repo,
+                allowDirty,
+                commit,
+                failFast,
+                autoCompactionPercent,
+            };
         }
         if (
             !positionalOnly &&
             (argument === '--version' || argument === '-v')
         ) {
-            return { action: 'version', repo, allowDirty, commit };
+            return {
+                action: 'version',
+                repo,
+                allowDirty,
+                commit,
+                failFast,
+                autoCompactionPercent,
+            };
         }
         if (!positionalOnly && argument === '--allow-dirty') {
             allowDirty = true;
@@ -156,6 +182,27 @@ export function parseCliArguments(
         }
         if (!positionalOnly && argument === '--commit') {
             commit = true;
+            continue;
+        }
+        if (!positionalOnly && argument === '--fail-fast') {
+            failFast = true;
+            continue;
+        }
+        if (!positionalOnly && argument === '--auto-compaction') {
+            const value = argv[index + 1];
+            if (value === undefined || value === '') {
+                throw new CliUsageError(
+                    '--auto-compaction requires a percentage',
+                );
+            }
+            autoCompactionPercent = parseAutoCompactionPercent(value);
+            index += 1;
+            continue;
+        }
+        if (!positionalOnly && argument.startsWith('--auto-compaction=')) {
+            autoCompactionPercent = parseAutoCompactionPercent(
+                argument.slice('--auto-compaction='.length),
+            );
             continue;
         }
         if (!positionalOnly && argument === '--repo') {
@@ -184,7 +231,15 @@ export function parseCliArguments(
         prompt = argument;
     }
 
-    return { action: 'execute', repo, prompt, allowDirty, commit };
+    return {
+        action: 'execute',
+        repo,
+        prompt,
+        allowDirty,
+        commit,
+        failFast,
+        autoCompactionPercent,
+    };
 }
 
 /**
@@ -197,6 +252,8 @@ export async function createExecutionRequest(options: {
     env?: NodeJS.ProcessEnv;
     allowDirty?: boolean;
     commit?: boolean;
+    failFast?: boolean;
+    autoCompactionPercent?: number;
 }): Promise<ExecutionRequest> {
     const prompt = options.prompt.trim();
     if (prompt === '') {
@@ -234,6 +291,8 @@ export async function createExecutionRequest(options: {
         configuration,
         repositoryState,
         commitRequest: commitRequestFromPrompt(prompt, options.commit),
+        failFast: options.failFast ?? false,
+        autoCompactionPercent: options.autoCompactionPercent,
     };
 }
 
@@ -285,6 +344,7 @@ export async function runCli(
     const executionOptions: RunExecutionOptions = {
         store,
         modelTransport: dependencies.modelTransport,
+        metricsEnv: dependencies.env,
         onReport: (report) => {
             consoleLog.attachRun(store.runDirectory(report.id));
             finalReport = report;
@@ -389,6 +449,8 @@ export async function runCli(
             env: dependencies.env,
             allowDirty: parsed.allowDirty,
             commit: parsed.commit,
+            failFast: parsed.failFast,
+            autoCompactionPercent: parsed.autoCompactionPercent,
         });
         stderr.write(`${TRUST_WARNING}\n`);
         const output = dependencies.execute
@@ -409,6 +471,8 @@ export async function runCli(
 }
 
 export interface RunExecutionOptions {
+    /** FLUE_METRICS_PORT enables a loopback Prometheus endpoint during execution. */
+    metricsEnv?: NodeJS.ProcessEnv;
     /** Embedded callers/tests may replace only the model transport. */
     modelTransport?: {
         check: typeof checkModelConnectivity;
@@ -448,6 +512,7 @@ export async function executeRequest(
     request: ExecutionRequest,
     options: RunExecutionOptions = {},
 ): Promise<string> {
+    const port = metricsPort(options.metricsEnv ?? process.env);
     const store = options.store ?? new RunStore();
     const existing = options.resumeId
         ? await store.read(options.resumeId)
@@ -476,8 +541,11 @@ export async function executeRequest(
         return summary;
     };
     const removeSignals = cancellationSignals(controller);
+    const metrics = new AgentMetrics(run.id);
+    let metricsServer: Awaited<ReturnType<typeof startMetricsServer>> | undefined;
     try {
         signal.throwIfAborted();
+        if (port !== undefined) metricsServer = await startMetricsServer(metrics, port);
         if (existing) {
             await rm(join(store.runDirectory(run.id), 'resume.json'));
             await store.update(run.id, { status: 'running' });
@@ -487,10 +555,9 @@ export async function executeRequest(
             (await workspaces.create(run.id, request.repositoryState));
         if (!existing)
             await patches.initialize(run.id, request.repositoryState);
-        await (options.modelTransport?.check ?? checkModelConnectivity)(
-            request.configuration,
-            { signal },
-        );
+        const providerMetadata = await (
+            options.modelTransport?.check ?? checkModelConnectivity
+        )(request.configuration, { signal });
         const agentNames = new AgentNames(join(store.runDirectory(run.id), 'agent-names.json'));
         // Seed legacy runs too, so resuming never restarts a role's numbering.
         for (const { action } of run.ledger) {
@@ -500,6 +567,7 @@ export async function executeRequest(
         const orchestrator = createOrchestrator({
             configuration: request.configuration,
             cwd: workspace,
+            autoCompactionPercent: request.autoCompactionPercent,
             sandbox: workspaceLocal({
                 cwd: workspace,
                 signal,
@@ -549,12 +617,14 @@ export async function executeRequest(
                 : Date.parse(run.timestamps.createdAt),
         });
         const disposePolicy = installOrchestrationPolicy({
+            configuration: request.configuration,
             conversationId,
             store,
             runId: run.id,
             limits,
             patches,
             agentNames,
+            failFast: request.failFast,
         });
         try {
             const handle = init(orchestrator, { id: conversationId });
@@ -598,6 +668,8 @@ export async function executeRequest(
                                 request.configuration.contextWindow,
                                 options.onEvent,
                                 agentNames,
+                                providerMetadata?.maxOutputTokens,
+                                metrics,
                             );
                             const decision = validateOrchestratorResult(text);
                             const latest = await patches.latest(run.id);
@@ -721,8 +793,22 @@ export async function executeRequest(
         throw error;
     } finally {
         removeSignals();
-        await unlock?.();
+        try {
+            await metricsServer?.close();
+        } finally {
+            await unlock?.();
+        }
     }
+}
+
+function parseAutoCompactionPercent(value: string): number {
+    const percentage = Number(value);
+    if (!Number.isFinite(percentage) || percentage <= 0 || percentage >= 100) {
+        throw new CliUsageError(
+            '--auto-compaction must be a number greater than 0 and less than 100',
+        );
+    }
+    return percentage;
 }
 
 async function readCompleteInput(

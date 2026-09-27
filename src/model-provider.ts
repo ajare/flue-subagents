@@ -9,6 +9,11 @@ export interface ConnectivityCheckOptions {
     signal?: AbortSignal;
 }
 
+export interface ProviderModelMetadata {
+    /** Provider-advertised per-response output cap, when available. */
+    maxOutputTokens?: number;
+}
+
 export class InfrastructureError extends Error {
     readonly code = 'model_unavailable';
     readonly endpoint: string;
@@ -68,7 +73,7 @@ export function createModelProvider(
 export async function checkModelConnectivity(
     configuration: AgentConfiguration,
     options: ConnectivityCheckOptions = {},
-): Promise<void> {
+): Promise<ProviderModelMetadata | void> {
     const fetchImplementation = options.fetch ?? globalThis.fetch;
     const modelsUrl = `${withoutTrailingSlash(configuration.endpoint)}/models`;
     const timeoutController = new AbortController();
@@ -96,6 +101,13 @@ export async function checkModelConnectivity(
                 configuration.endpoint,
             );
         }
+        let payload: unknown;
+        try {
+            payload = await response.json();
+        } catch {
+            return {};
+        }
+        return providerModelMetadata(payload, configuration.model);
     } catch (error) {
         if (error instanceof InfrastructureError) throw error;
         const detail = signal.aborted
@@ -123,6 +135,42 @@ export function splitModelSpecifier(specifier: string): {
         providerId: specifier.slice(0, separator),
         modelId: specifier.slice(separator + 1),
     };
+}
+
+function providerModelMetadata(
+    payload: unknown,
+    modelSpecifier: string,
+): ProviderModelMetadata {
+    if (!isRecord(payload) || !Array.isArray(payload.data)) return {};
+    const models = payload.data.filter(isRecord);
+    const { modelId } = splitModelSpecifier(modelSpecifier);
+    const normalizedModelId = normalizeModelId(modelId);
+    const matches = models.filter((model) => {
+        if (typeof model.id !== 'string') return false;
+        const normalizedId = normalizeModelId(model.id);
+        return (
+            model.id === modelId ||
+            model.id === modelSpecifier ||
+            normalizedId.endsWith(normalizedModelId)
+        );
+    });
+    const model = matches.length === 1
+        ? matches[0]
+        : models.length === 1
+            ? models[0]
+            : undefined;
+    const cap = model?.max_tokens_cap;
+    return Number.isSafeInteger(cap) && (cap as number) > 0
+        ? { maxOutputTokens: cap as number }
+        : {};
+}
+
+function normalizeModelId(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]/gu, '');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function withoutTrailingSlash(value: string): string {

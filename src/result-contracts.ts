@@ -123,8 +123,41 @@ export interface ResultValidationIssue {
     message: string;
 }
 
+export interface ResultDiagnostics {
+    reasonCode: 'output_truncated' | 'invalid_subagent_result';
+    stopReason?: 'length';
+    configuredOutputTokenLimit?: number;
+    outputTokens?: number;
+    reachedValidation: boolean;
+}
+
+export interface ResultSizeLimits {
+    maxStringLength: number;
+    maxCollectionItems: number;
+    maxResultLength: number;
+}
+
+export const DEFAULT_RESULT_LIMITS: Record<SubagentRole, ResultSizeLimits> = {
+    explorer: { maxStringLength: 4000, maxCollectionItems: 128, maxResultLength: 48000 },
+    planner: { maxStringLength: 4000, maxCollectionItems: 64, maxResultLength: 32000 },
+    implementer: { maxStringLength: 4000, maxCollectionItems: 128, maxResultLength: 48000 },
+    reviewer: { maxStringLength: 4000, maxCollectionItems: 128, maxResultLength: 48000 },
+};
+
+export const CONCISE_RESULT_POLICY = `
+RESULT SIZE POLICY
+Use one evidence item per distinct fact, not per grep hit. Group caller locations
+with identical observations. Keep excerpts centered on the relevant expression.
+Do not reproduce full files, command output, repeated issue bodies, or narrative
+already represented in evidence unless verbatim content is the objective.
+Summaries should point to evidence, not duplicate it. Target at most one quarter
+of the configured output-token budget for the final object, leaving room for reasoning.
+If asked to compact, preserve conclusions and unique evidence; shorten and deduplicate.
+`;
+
 export class ResultValidationError extends Error {
-    readonly code = 'invalid_subagent_result';
+    diagnostics?: ResultDiagnostics;
+    get code() { return this.diagnostics?.reasonCode ?? 'invalid_subagent_result'; }
     readonly role: SubagentRole;
     readonly issues: readonly ResultValidationIssue[];
     readonly output: unknown;
@@ -150,6 +183,7 @@ export class ResultValidationError extends Error {
 export function validateSubagentResult<Role extends SubagentRole>(
     role: Role,
     output: unknown,
+    limits: ResultSizeLimits = DEFAULT_RESULT_LIMITS[role],
 ): ResultForRole<Role> {
     let value = output;
     if (typeof output === 'string') {
@@ -187,6 +221,25 @@ export function validateSubagentResult<Role extends SubagentRole>(
             output,
         );
     }
+    const issues: ResultValidationIssue[] = [];
+    function check(value: unknown, path: string): void {
+        if (typeof value === 'string' && value.length > limits.maxStringLength)
+            issues.push({ path, message: `compact to at most ${limits.maxStringLength} characters` });
+        if (Array.isArray(value)) {
+            if (value.length > limits.maxCollectionItems)
+                issues.push({ path, message: `group and deduplicate to at most ${limits.maxCollectionItems} items` });
+            value.forEach((item, index) => { check(item, `${path}[${index}]`); });
+        } else if (value && typeof value === 'object') {
+            for (const [key, item] of Object.entries(value)) {
+                // Fixed contract discriminants cannot be shortened by the model.
+                if (!['role', 'verdict', 'scope', 'result', 'severity'].includes(key)) check(item, `${path}.${key}`);
+            }
+        }
+    }
+    check(parsed.output, '$');
+    if (JSON.stringify(parsed.output).length > limits.maxResultLength)
+        issues.push({ path: '$', message: `compact the complete object to at most ${limits.maxResultLength} characters` });
+    if (issues.length) throw new ResultValidationError(role, issues, output);
     return parsed.output as ResultForRole<Role>;
 }
 
@@ -290,6 +343,9 @@ export function correctivePrompt(
     error: ResultValidationError,
     originalPrompt?: string,
 ): string {
+    if (error.diagnostics?.reasonCode === 'output_truncated') {
+        return `Your result was truncated at the output-token limit and is invalid. Return only one compact JSON object matching the original OUTPUT CONTRACT, using submit_specialist_result. Preserve conclusions and unique evidence, deduplicate callers, shorten excerpts to the minimum needed, and omit narrative already represented by evidence entries. Target less than half the previous result size. Retain your investigation; do not rerun repository commands unless necessary. This is your only corrective attempt.`;
+    }
     const problems = error.issues
         .map((issue) => `- ${issue.path}: ${issue.message}`)
         .join('\n');

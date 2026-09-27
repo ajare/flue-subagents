@@ -1,3 +1,5 @@
+import type { AgentMetrics } from './metrics.ts';
+import { activeResultCorrection } from './result-correction.ts';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { type FlueObservation, observe } from '@flue/runtime';
@@ -24,7 +26,9 @@ export class ExecutionTelemetry {
     private onEvent?: (event: object) => void;
     private maxOutputTokens: number;
     private contextWindow: number;
+    private readonly providerMaxOutputTokens?: number;
     private readonly agentNames: AgentNames;
+    private readonly metrics?: AgentMetrics;
 
     constructor(
         path: string,
@@ -34,8 +38,12 @@ export class ExecutionTelemetry {
         contextWindow: number,
         onEvent?: (event: object) => void,
         agentNames = new AgentNames(),
+        providerMaxOutputTokens?: number,
+        metrics?: AgentMetrics,
     ) {
+        this.metrics = metrics;
         this.agentNames = agentNames;
+        this.providerMaxOutputTokens = providerMaxOutputTokens;
         if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
             throw new RangeError('maxOutputTokens must be a positive integer');
         }
@@ -48,6 +56,7 @@ export class ExecutionTelemetry {
         this.path = path;
         this.runId = runId;
         this.conversationId = conversationId;
+        this.metrics?.start('orchestrator', 'orchestrator');
         this.record({
             type: 'prompt_start',
             timestamp: new Date().toISOString(),
@@ -90,6 +99,7 @@ export class ExecutionTelemetry {
                 this.onEvent?.(output);
                 return;
             }
+            this.metrics?.start(this.agentNames.get(event.taskId, event.agent), event.agent ?? 'unknown');
             this.tasks.set(event.taskId, {
                 startedAt: event.timestamp,
                 outputTokens: 0,
@@ -117,6 +127,11 @@ export class ExecutionTelemetry {
             });
         } else if (event.type === 'turn') {
             const tokens = event.response.usage?.output;
+            this.metrics?.addOutputTokens(
+                event.taskId ? this.tasks.get(event.taskId)?.agent ?? 'unknown' : 'orchestrator',
+                tokens,
+            );
+            const stopReason = activeResultCorrection.getStore()?.completion?.stopReason ?? event.response.finishReason;
             const stats = takeProviderStats(event.turnId);
             const usage = event.response.usage;
             // Runtime input excludes cache reads/writes; include them to report
@@ -131,15 +146,17 @@ export class ExecutionTelemetry {
                 Number.isFinite(inputTokens) && inputTokens >= 0
                 ? inputTokens
                 : null;
+            const agentName = event.taskId
+                ? this.tasks.get(event.taskId)?.agent ?? 'unknown'
+                : 'orchestrator';
+            this.metrics?.setContextTokens(agentName, contextTokens ?? undefined);
             const output = {
                 type: 'event',
                 event: 'llm_output',
                 runId: this.runId,
                 promptId: this.promptId,
                 ts: Date.parse(event.timestamp),
-                agent: event.taskId
-                    ? this.tasks.get(event.taskId)?.agent ?? 'unknown'
-                    : 'orchestrator',
+                agent: agentName,
                 taskId: event.taskId,
                 turnId: event.turnId,
                 ...stats,
@@ -149,6 +166,10 @@ export class ExecutionTelemetry {
                     ? null
                     : Math.max(0, Math.min(1, contextTokens / this.contextWindow)),
                 outputTokens: tokens ?? null,
+                configuredOutputTokenLimit: this.maxOutputTokens,
+                providerMaxOutputTokens: this.providerMaxOutputTokens ?? null,
+                stopReason: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(stopReason ?? '')
+                    ? stopReason : undefined,
                 outputTokenPercentage: tokens === undefined
                     ? null
                     : Math.max(0, Math.min(1, tokens / this.maxOutputTokens)),
@@ -213,12 +234,16 @@ export class ExecutionTelemetry {
                 status: event.isError ? 'failed' : 'completed',
                 ...failure,
             });
+            this.metrics?.finish(span.agent ?? 'unknown', event.isError ? 'failed' : 'completed');
             this.tasks.delete(event.taskId);
         }
     };
 
     finish(status: 'completed' | 'interrupted') {
         const endedAt = new Date().toISOString();
+        this.metrics?.finish('orchestrator', status);
+        for (const span of this.tasks.values())
+            this.metrics?.finish(span.agent ?? 'unknown', 'interrupted');
         for (const [taskId, span] of this.tasks)
             this.record({
                 type: 'subagent_end',
@@ -252,8 +277,20 @@ export async function recordPrompt<T>(
     contextWindow: number,
     onEvent?: (event: object) => void,
     agentNames?: AgentNames,
+    providerMaxOutputTokens?: number,
+    metrics?: AgentMetrics,
 ): Promise<T> {
-    const telemetry = new ExecutionTelemetry(path, runId, conversationId, maxOutputTokens, contextWindow, onEvent, agentNames);
+    const telemetry = new ExecutionTelemetry(
+        path,
+        runId,
+        conversationId,
+        maxOutputTokens,
+        contextWindow,
+        onEvent,
+        agentNames,
+        providerMaxOutputTokens,
+        metrics,
+    );
     const unsubscribe = observe(telemetry.observe);
     let status: 'completed' | 'interrupted' = 'interrupted';
     try {

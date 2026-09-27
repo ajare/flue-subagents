@@ -152,13 +152,22 @@ test('default provider request respects the local server output-token cap', asyn
 test('connectivity check reports endpoint failures as infrastructure errors', async () => {
     const configuration = resolveConfigurationSources({});
     let requestedUrl: string | undefined;
-    await checkModelConnectivity(configuration, {
+    const metadata = await checkModelConnectivity(configuration, {
         fetch: async (input) => {
             requestedUrl = String(input);
-            return new Response('{}', { status: 200 });
+            return Response.json({
+                object: 'list',
+                data: [
+                    {
+                        id: 'halogen-qwen3.8-flash-next',
+                        max_tokens_cap: 65_536,
+                    },
+                ],
+            });
         },
     });
     assert.equal(requestedUrl, 'http://localhost:8731/v1/models');
+    assert.deepEqual(metadata, { maxOutputTokens: 65_536 });
 
     await assert.rejects(
         checkModelConnectivity(configuration, {

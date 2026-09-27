@@ -1,3 +1,5 @@
+import { recoverTruncatedStream } from './truncated-result-stream.ts';
+import { DEFAULT_CONFIGURATION, type AgentConfiguration } from './config.ts';
 import {
     type FlueExecutionContext,
     type FlueExecutionInterceptor,
@@ -13,6 +15,7 @@ import {
 } from './orchestration-limits.ts';
 import {
     mayIgnoreRoleFailure,
+    DEFAULT_RESULT_LIMITS,
     ResultValidationError,
     type SubagentRole,
     validateSubagentResult,
@@ -305,6 +308,8 @@ export interface OrchestrationPolicyControllerOptions {
     limits: OrchestrationLimits;
     patches?: PatchManager;
     agentNames?: AgentNames;
+    configuration?: AgentConfiguration;
+    failFast?: boolean;
 }
 
 /**
@@ -321,14 +326,19 @@ export class OrchestrationPolicyController {
     private readonly boundary = new ReviewBoundary();
     private readonly agentNames: AgentNames;
     private readonly patches?: PatchManager;
+    private readonly configuration: AgentConfiguration;
+    private readonly failFast: boolean;
+    private failFastFailure?: Error;
 
     constructor(options: OrchestrationPolicyControllerOptions) {
+        this.configuration = { ...DEFAULT_CONFIGURATION, ...options.configuration };
         this.conversationId = options.conversationId;
         this.store = options.store;
         this.runId = options.runId;
         this.limits = options.limits;
         this.patches = options.patches;
         this.agentNames = options.agentNames ?? new AgentNames();
+        this.failFast = options.failFast ?? false;
     }
 
     observe = (event: FlueObservation): void => {
@@ -363,8 +373,21 @@ export class OrchestrationPolicyController {
         context: FlueExecutionContext,
         next: () => Promise<T>,
     ): Promise<T> => {
+        if (context.instanceId === this.conversationId && this.failFastFailure)
+            throw this.failFastFailure;
         if (operation.type === 'model' && context.instanceId === this.conversationId) {
-            return withProviderStats(operation.turnId, this.conversationId, next);
+            const value = await withProviderStats(operation.turnId, this.conversationId, next);
+            const correction = activeResultCorrection.getStore();
+            // Flue intercepts creation, iterator steps, and result(). Wrap only
+            // creation to keep the durable stream and returned message consistent.
+            if (correction && value && typeof value === 'object' &&
+                Symbol.asyncIterator in value && 'result' in value) {
+                return recoverTruncatedStream(
+                    value as unknown as Parameters<typeof recoverTruncatedStream>[0],
+                    correction, this.configuration.maxOutputTokens,
+                ) as T;
+            }
+            return value;
         }
         if (
             operation.type !== 'task' ||
@@ -442,14 +465,24 @@ export class OrchestrationPolicyController {
             role: intent.role,
             task: taskSummary(intent.prompt, intent.role),
         });
+        const roleLimits = DEFAULT_RESULT_LIMITS[intent.role];
+        const sizeLimits = {
+            maxStringLength: this.configuration.resultMaxStringLength,
+            maxCollectionItems: Math.max(1, Math.floor(this.configuration.resultMaxCollectionItems * roleLimits.maxCollectionItems / DEFAULT_CONFIGURATION.resultMaxCollectionItems)),
+            maxResultLength: Math.max(1, Math.floor(this.configuration.resultMaxLength * roleLimits.maxResultLength / DEFAULT_CONFIGURATION.resultMaxLength)),
+        };
+        const validate = (output: unknown) => intent.role === 'explorer'
+            ? normalizeExplorerResult(output, sizeLimits)
+            : validateSubagentResult(intent.role, output, sizeLimits);
         const correction = new ResultCorrection(intent.role, {
             prompt: intent.prompt,
+            instructions: `Configured output limit: ${this.configuration.maxOutputTokens} tokens (including reasoning). Target at most ${Math.floor(this.configuration.maxOutputTokens / 4)} tokens for the final object. Presentation limits: ${sizeLimits.maxStringLength} characters per string, ${sizeLimits.maxCollectionItems} items per collection, ${sizeLimits.maxResultLength} characters for the complete JSON object.`,
             consume: () => this.limits.consumeDelegation(intent.role),
             onMalformed: async (error) => {
-                await append({ type: 'malformed', id: intent.id, issues: error.issues.map(issue => `${issue.path}: ${issue.message}`) });
+                await append({ type: 'malformed', id: intent.id, issues: error.issues.map(issue => `${issue.path}: ${issue.message}`), diagnostics: error.diagnostics });
             },
             onRetry: async () => { await append({ type: 'retry', id: intent.id }); },
-            validate: output => intent.role === 'explorer' ? normalizeExplorerResult(output) : validateSubagentResult(intent.role, output),
+            validate,
         });
         try {
             this.limits.consumeDelegation(intent.role);
@@ -475,10 +508,7 @@ export class OrchestrationPolicyController {
             if (!outcome.ok) throw outcome.error;
             const output = outcome.value;
             if (correction.failure) throw correction.failure;
-            const result = correction.result ?? (
-                intent.role === 'explorer'
-                    ? normalizeExplorerResult(taskResponseText(output))
-                    : validateSubagentResult(intent.role, taskResponseText(output)));
+            const result = correction.result ?? validate(taskResponseText(output));
             await append({ type: 'result', id: intent.id, result });
             if (correction.result || intent.role === 'explorer') {
                 // Flue forwards this text as the task tool result. Do not send
@@ -501,6 +531,7 @@ export class OrchestrationPolicyController {
                     issues: error.issues.map(
                         (issue) => `${issue.path}: ${issue.message}`,
                     ),
+                    diagnostics: error.diagnostics ?? { reasonCode: 'invalid_subagent_result', reachedValidation: true },
                 });
             }
             await append({
@@ -511,6 +542,13 @@ export class OrchestrationPolicyController {
                         ? `orchestration_defect: ${error.message}`
                         : errorMessage(error),
             });
+            if (this.failFast) {
+                this.failFastFailure ??= new Error(
+                    `Fail-fast: ${intent.role} sub-agent ${intent.id} failed`,
+                    { cause: error },
+                );
+                throw this.failFastFailure;
+            }
             throw error;
         }
     }

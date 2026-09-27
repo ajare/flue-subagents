@@ -26,8 +26,14 @@ SHA-256 fingerprint of the complete allowed starting state so later phases can
 detect concurrent changes.
 
 Empty prompts, invalid paths, unknown options, configuration failures, and
-runtime failures return a non-zero status. Human diagnostics go to stderr;
-`--json` emits NDJSON events and structured outcomes to stdout. Use `--help` and
+runtime failures return a non-zero status. By default, the orchestrator may
+continue after a sub-agent failure when policy permits it. Pass `--fail-fast` to
+end the run after the first started sub-agent failure; this is off by default and
+is retained if an interrupted run is resumed. Use `--auto-compaction 70` to
+compact conversation history when context utilization reaches 70%; the value
+must be greater than 0 and less than 100. Omitting it preserves Flue's
+model-aware default threshold. The selected threshold is retained on resume.
+Human diagnostics go to stderr; `--json` emits NDJSON events and structured outcomes to stdout. Use `--help` and
 `--version` for command metadata. See [reporting](reporting.md) for stable exit
 codes and the `list`, `inspect`, and `cleanup` commands.
 

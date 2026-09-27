@@ -42,7 +42,10 @@ Each completed model turn also emits an `llm_output` event with `agent`,
 `null` when usage is unavailable). Counts are per model
 response, including tool-call responses, not per command or patch checkpoint.
 Unavailable usage is `null`, not zero; failed turns can still report consumed
-tokens. These events are also saved in `execution-telemetry.jsonl`.
+tokens. `configuredOutputTokenLimit` records the request budget, while
+`providerMaxOutputTokens` records the provider's `max_tokens_cap` advertised by
+the selected `/models` entry (`null` when unavailable). These events are also
+saved in `execution-telemetry.jsonl`.
 
 Every `llm_output` also reports `contextTokens` (the input context for that
 turn, including cached tokens), `contextWindow` (the configured token capacity),

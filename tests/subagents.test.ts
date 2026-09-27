@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { init, useModel, useSandbox, useSubagent } from '@flue/runtime';
+import {
+    type SubagentRole,
+    validateSubagentResult,
+} from '../src/result-contracts.ts';
 import { readOnlyLocal } from '../src/sandboxes/read-only-local.ts';
 import { explorer } from '../src/subagents/explorer.ts';
 import { implementer } from '../src/subagents/implementer.ts';
 import { planner } from '../src/subagents/planner.ts';
 import { reviewer } from '../src/subagents/reviewer.ts';
-import {
-    type SubagentRole,
-    validateSubagentResult,
-} from '../src/result-contracts.ts';
 import { createTestRuntime, TEST_MODEL } from './helpers/runtime.ts';
 
 function SpecialistHarness() {
@@ -168,18 +168,32 @@ test('mocked specialist delegations return valid contracts and isolated capabili
     assert.equal(childTurns.length, 4);
 
     const expectedCustomTools: Record<SubagentRole, readonly string[]> = {
-        explorer: ['inspect_repository', 'submit_specialist_result'],
-        planner: ['inspect_repository', 'submit_specialist_result'],
+        explorer: [
+            'inspect_repository',
+            'read_github_issue',
+            'submit_specialist_result',
+        ],
+        planner: [
+            'inspect_repository',
+            'read_github_issue',
+            'submit_specialist_result',
+        ],
         implementer: [
+            'read_github_issue',
             'submit_specialist_result',
             'implement_write_file',
             'implement_replace_text',
             'implement_run_command',
         ],
-        reviewer: ['review_run_command', 'submit_specialist_result'],
+        reviewer: [
+            'read_github_issue',
+            'review_run_command',
+            'submit_specialist_result',
+        ],
     };
     const allCustomTools = [
         'inspect_repository',
+        'read_github_issue',
         'submit_specialist_result',
         'implement_write_file',
         'implement_replace_text',

@@ -1,8 +1,9 @@
-import { defineTool, useTool } from '@flue/runtime';
+import { defineTool, useTool, useInstruction } from '@flue/runtime';
 import * as v from 'valibot';
 import { activeResultCorrection } from '../result-correction.ts';
 import {
     validateSubagentResult,
+    CONCISE_RESULT_POLICY,
     type SubagentRole,
 } from '../result-contracts.ts';
 
@@ -10,6 +11,7 @@ export const SPECIALIST_RESULT_TOOL = 'submit_specialist_result';
 
 /** Flue disallows lifecycle hooks on subagents; validate inside their finish tool. */
 export function useSpecialistResult(role: SubagentRole) {
+    useInstruction(`${CONCISE_RESULT_POLICY}\n${activeResultCorrection.getStore()?.instructions ?? ''}`);
     useTool(
         defineTool({
             name: SPECIALIST_RESULT_TOOL,

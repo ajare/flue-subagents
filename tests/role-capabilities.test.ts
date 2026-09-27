@@ -8,6 +8,7 @@ import { MutationCoordinator } from '../src/mutation-coordinator.ts';
 import { readOnlyLocal } from '../src/sandboxes/read-only-local.ts';
 import { workspaceLocal } from '../src/sandboxes/workspace-local.ts';
 import { inspectionCommand } from '../src/tools/inspection-tools.ts';
+import { githubIssueCommand } from '../src/tools/issue-tracker-tools.ts';
 
 async function temporaryDirectory(): Promise<string> {
     return mkdtemp(join(tmpdir(), 'flue-capabilities-'));
@@ -43,6 +44,18 @@ test('inspection commands are structured and reject shell and path escapes', () 
             }),
         /unsupported characters/,
     );
+});
+
+test('GitHub issue reads use a fixed, injection-free command shape', () => {
+    assert.equal(
+        githubIssueCommand(184),
+        'gh issue view 184 --json number,title,state,author,labels,body,comments,url',
+    );
+    for (const invalid of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])
+        assert.throws(
+            () => githubIssueCommand(invalid),
+            /positive safe integer/,
+        );
 });
 
 test('mutation coordinator permits only one mutating operation at a time', async () => {

@@ -67,6 +67,7 @@ export async function delegateWithLedger<Role extends SubagentRole>(
                 await append({
                     type: 'malformed',
                     id,
+                    diagnostics: error.diagnostics,
                     issues: error.issues.map(
                         (issue) => `${issue.path}: ${issue.message}`,
                     ),

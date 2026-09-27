@@ -15,6 +15,9 @@ The project file is a JSON object using the option names below. Durations accept
 | `endpoint` | `FLUE_AGENT_ENDPOINT` | `http://localhost:8731/v1` |
 | `contextWindow` | `FLUE_AGENT_CONTEXT_WINDOW` | `262144` |
 | `maxOutputTokens` | `FLUE_AGENT_MAX_OUTPUT_TOKENS` | `65536` |
+| `resultMaxStringLength` | `FLUE_AGENT_RESULT_MAX_STRING_LENGTH` | `4000` characters |
+| `resultMaxCollectionItems` | `FLUE_AGENT_RESULT_MAX_COLLECTION_ITEMS` | `128` items |
+| `resultMaxLength` | `FLUE_AGENT_RESULT_MAX_LENGTH` | `48000` characters |
 | `reasoningEffort` | `FLUE_AGENT_REASONING_EFFORT` | `high` |
 | `readOnlyConcurrency` | `FLUE_AGENT_READ_ONLY_CONCURRENCY` | `4` |
 | `implementerConcurrency` | `FLUE_AGENT_IMPLEMENTER_CONCURRENCY` | `1` |
@@ -25,6 +28,20 @@ The project file is a JSON object using the option names below. Durations accept
 | `connectivityTimeoutMs` | `FLUE_AGENT_CONNECTIVITY_TIMEOUT` | `5s` |
 | `retentionMs` | `FLUE_AGENT_RETENTION` | `7d` |
 | `workspaceLimitBytes` | `FLUE_AGENT_WORKSPACE_LIMIT` | `10gib` |
+
+Presentation limits reject complete overlarge specialist results with field-specific
+compaction instructions; evidence is never silently dropped. The planner uses half
+the configured collection limit and two thirds of the total-object limit; other
+roles use the configured values. Limits are positive integers and can be set in
+project configuration or the environment. Fixed contract discriminants are exempt
+from the string limit. Persisted results are replayed independently of current limits.
+
+A length-stopped incomplete specialist result is classified as `output_truncated`.
+It consumes the same single corrective attempt and extra delegation-budget unit
+as a malformed result, continuing the original child session with compaction
+instructions. A second invalid result is terminal. Reports retain safe stop reason,
+token counts, and recovery status without including partial output. Length-stopped
+tool arguments are never trusted, even when the provider salvages valid JSON.
 
 `maxOutputTokens` is a per-request output budget, separate from `contextWindow`.
 The default fits the local server's 65,536-token policy cap. If your server uses

@@ -7,6 +7,7 @@ import {
     useModel,
     useSandbox,
     useSubagent,
+    useTool,
 } from '@flue/runtime';
 
 import {
@@ -19,6 +20,7 @@ import { explorer } from '../subagents/explorer.ts';
 import { implementer } from '../subagents/implementer.ts';
 import { planner } from '../subagents/planner.ts';
 import { reviewer } from '../subagents/reviewer.ts';
+import { readGitHubIssue } from '../tools/issue-tracker-tools.ts';
 import { useStructuredResult } from './structured-result.ts';
 
 export const ORCHESTRATOR_POLICY = `
@@ -31,10 +33,16 @@ DECISION POLICY
 1. First determine whether the objective is informational or requires a
    repository change. Answer a trivial question directly when the available
    read-only tools are enough; do not delegate merely to demonstrate activity.
+   If the objective references a GitHub issue by number, call read_github_issue
+   before planning or delegation and carry its requirements into every relevant
+   self-contained briefing. Do not ask the user to paste an issue that this tool
+   can read.
 2. Resolve repository facts before making assumptions. Delegate focused,
    independent unknowns to explorers in one parallel tool batch when that is
    more efficient than inspecting them yourself. Do not parallelize work with
-   dependencies between it.
+   dependencies between it. Split genuinely independent exhaustive inventories
+   into bounded tasks; do not request every caller with full surrounding excerpts
+   in one specialist result.
 3. Use a planner for cross-cutting changes, unfamiliar architecture, migration
    or compatibility risk, security-sensitive behavior, or multiple plausible
    implementation approaches. Skip planning for a small, well-bounded change.
@@ -123,6 +131,7 @@ export interface ConfiguredOrchestratorOptions {
     cwd?: string;
     hostEnvironment?: NodeJS.ProcessEnv;
     sandbox?: SandboxFactory;
+    autoCompactionPercent?: number;
 }
 
 /** Create an agent entry bound to one validated run configuration. */
@@ -136,6 +145,7 @@ export function createOrchestrator(options: ConfiguredOrchestratorOptions) {
             cwd,
             environment,
             options.sandbox,
+            options.autoCompactionPercent,
         );
     }
     // Flue has its own one-hour submission deadline unless explicitly set.
@@ -163,16 +173,27 @@ function renderOrchestrator(
     cwd: string,
     environment: Record<string, string>,
     sandbox?: SandboxFactory,
+    autoCompactionPercent?: number,
 ) {
-    useModel(
-        configuration.model,
-        configuration.reasoningEffort === 'off'
+    const reserveTokens =
+        autoCompactionPercent === undefined
             ? undefined
-            : { thinkingLevel: configuration.reasoningEffort },
-    );
+            : autoCompactionReserveTokens(
+                  configuration.contextWindow,
+                  autoCompactionPercent,
+              );
+    useModel(configuration.model, {
+        ...(configuration.reasoningEffort === 'off'
+            ? {}
+            : { thinkingLevel: configuration.reasoningEffort }),
+        ...(reserveTokens === undefined
+            ? {}
+            : { compaction: { reserveTokens } }),
+    });
 
     useSandbox(sandbox ?? readOnlyLocal(cwd, environment));
 
+    useTool(readGitHubIssue);
     useSubagent(explorer);
     useSubagent(planner);
     useSubagent(implementer);
@@ -180,4 +201,15 @@ function renderOrchestrator(
     useStructuredResult();
 
     return ORCHESTRATOR_POLICY;
+}
+
+export function autoCompactionReserveTokens(
+    contextWindow: number,
+    percentage: number,
+): number {
+    if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
+        throw new RangeError('contextWindow must be a positive integer');
+    if (!Number.isFinite(percentage) || percentage <= 0 || percentage >= 100)
+        throw new RangeError('percentage must be greater than 0 and less than 100');
+    return contextWindow - Math.floor((contextWindow * percentage) / 100);
 }

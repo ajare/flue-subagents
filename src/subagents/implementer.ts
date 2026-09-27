@@ -1,14 +1,15 @@
-import { useSpecialistResult } from '../agents/specialist-result.ts';
 import { defineSubagent, useTool } from '@flue/runtime';
-
+import { useSpecialistResult } from '../agents/specialist-result.ts';
 import {
-    writeFile,
     replaceText,
     runCommand,
+    writeFile,
 } from '../tools/implementation-tools.ts';
+import { readGitHubIssue } from '../tools/issue-tracker-tools.ts';
 
 function Implementer() {
     useSpecialistResult('implementer');
+    useTool(readGitHubIssue);
     useTool(writeFile);
     useTool(replaceText);
     useTool(runCommand);
@@ -32,7 +33,8 @@ report it as unresolved instead of guessing.
 WORKING METHOD
 
 1. Read all relevant files and verify the supplied assumptions or plan against
-   the current repository.
+   the current repository. Use read_github_issue when the task depends on issue
+   details that are not fully included in the briefing.
 2. Make the smallest coherent change needed and avoid unrelated refactors.
 3. Prefer implement_replace_text for focused edits to existing files.
 4. Use implement_write_file for new files or justified complete rewrites.

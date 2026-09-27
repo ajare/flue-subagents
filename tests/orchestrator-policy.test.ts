@@ -40,6 +40,7 @@ const implementerResult = JSON.stringify({
 async function fixture(
     t: TestContext,
     overrides: Partial<typeof DEFAULT_CONFIGURATION> = {},
+    failFast = false,
 ) {
     const root = await mkdtemp(join(tmpdir(), 'flue-policy-'));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -58,12 +59,14 @@ async function fixture(
         store,
         runId: run.id,
         limits,
+        failFast,
     });
     return { store, run, controller, limits };
 }
 
 test('policy is application-owned and makes delegation proportionate', () => {
     assert.match(ORCHESTRATOR_POLICY, /trivial question directly/);
+    assert.match(ORCHESTRATOR_POLICY, /call read_github_issue/);
     assert.match(ORCHESTRATOR_POLICY, /parallel tool batch/);
     assert.match(ORCHESTRATOR_POLICY, /Use a planner for cross-cutting/);
     assert.match(ORCHESTRATOR_POLICY, /Never modify files yourself/);
@@ -522,6 +525,67 @@ test('runtime correction cannot bypass the shared attempt budget', async (t) => 
     const record = await store.read(run.id);
     assert.equal(record.status, 'blocked');
     assert.deepEqual(record.ledger.map(e => e.action.type), ['start', 'malformed', 'failure']);
+});
+
+test('fail-fast prevents another root model turn after a sub-agent failure', async (t) => {
+    const { controller } = await fixture(t, {}, true);
+    controller.registerDelegation({
+        id: 'failed-explorer',
+        role: 'explorer',
+        prompt: briefing(),
+    });
+
+    await assert.rejects(
+        controller.intercept(
+            { type: 'task', taskId: 'failed-explorer' },
+            { instanceId: 'conversation' },
+            async () => {
+                throw new Error('provider failed');
+            },
+        ),
+        /Fail-fast: explorer sub-agent failed-explorer failed/u,
+    );
+
+    let modelCalled = false;
+    await assert.rejects(
+        controller.intercept(
+            { type: 'model', turnId: 'next-turn' },
+            { instanceId: 'conversation' },
+            async () => {
+                modelCalled = true;
+                return undefined;
+            },
+        ),
+        /Fail-fast/u,
+    );
+    assert.equal(modelCalled, false);
+});
+
+test('sub-agent failures do not stop later root turns by default', async (t) => {
+    const { controller } = await fixture(t);
+    controller.registerDelegation({
+        id: 'failed-explorer',
+        role: 'explorer',
+        prompt: briefing(),
+    });
+    await assert.rejects(
+        controller.intercept(
+            { type: 'task', taskId: 'failed-explorer' },
+            { instanceId: 'conversation' },
+            async () => {
+                throw new Error('provider failed');
+            },
+        ),
+        /provider failed/u,
+    );
+    assert.equal(
+        await controller.intercept(
+            { type: 'model', turnId: 'next-turn' },
+            { instanceId: 'conversation' },
+            async () => 'continued',
+        ),
+        'continued',
+    );
 });
 
 test('review source boundary includes corrective continuation', async (t) => {

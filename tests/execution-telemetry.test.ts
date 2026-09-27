@@ -12,7 +12,16 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
     try {
         const path = join(dir, 'events.jsonl');
         const published: object[] = [];
-        const telemetry = new ExecutionTelemetry(path, 'run', 'conversation', 16, 100, (event) => published.push(event));
+        const telemetry = new ExecutionTelemetry(
+            path,
+            'run',
+            'conversation',
+            16,
+            100,
+            (event) => published.push(event),
+            undefined,
+            64,
+        );
         const emit = (event: object) =>
             telemetry.observe({
                 v: 3,
@@ -87,6 +96,7 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
         assert.deepEqual(outputs.map((e) => e.contextTokens), [60, 110, null, null, 0]);
         assert.deepEqual(outputs.map((e) => e.contextUtilization), [0.6, 1, null, null, 0]);
         assert.ok(outputs.every((e) => e.contextWindow === 100));
+        assert.ok(outputs.every((e) => e.providerMaxOutputTokens === 64));
         assert.deepEqual(outputs.map((e) => e.outputTokenPercentage), [10 / 16, 1, 5 / 16, null, 7 / 16]);
         assert.deepEqual(outputs.map((e) => e.agent), ['explorer-1', 'planner-1', 'explorer-1', 'planner-1', 'orchestrator']);
         assert.deepEqual(outputs.map((e) => e.taskId), ['a', 'b', 'a', 'b', undefined]);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 import { DEFAULT_CONFIGURATION } from '../src/config.ts';
+import { WorkspaceManager } from '../src/workspaces.ts';
 import {
     RunStorageError,
     RunStore,
@@ -45,6 +46,45 @@ test('run records survive a new store instance with repository identity', async 
         join(paths.storage, 'runs', created.id, 'audit.ndjson'),
     );
     assert.equal(created.configuration.model, DEFAULT_CONFIGURATION.model);
+});
+
+test('legacy run snapshots without presentation limits remain readable', async (t) => {
+    const paths = await directories(t);
+    const store = new RunStore({ root: paths.storage });
+    const run = await store.create({
+        repository: paths.repository,
+        configuration: DEFAULT_CONFIGURATION,
+    });
+    const snapshot = JSON.parse(await readFile(store.recordPath(run.id), 'utf8'));
+    for (const key of ['resultMaxStringLength', 'resultMaxCollectionItems', 'resultMaxLength'])
+        delete snapshot.configuration[key];
+    await writeFile(store.recordPath(run.id), JSON.stringify(snapshot));
+    // A new CLI execution sweeps historical runs before creating its own run.
+    await new WorkspaceManager(store).sweep();
+    const loaded = await store.read(run.id);
+    assert.equal(loaded.id, run.id);
+    for (const key of ['resultMaxStringLength', 'resultMaxCollectionItems', 'resultMaxLength'] as const)
+        assert.equal(loaded.configuration[key], DEFAULT_CONFIGURATION[key]);
+    await store.update(run.id, { status: 'completed' });
+    const persisted = JSON.parse(await readFile(store.recordPath(run.id), 'utf8'));
+    assert.equal(persisted.configuration.resultMaxStringLength, DEFAULT_CONFIGURATION.resultMaxStringLength);
+});
+
+test('presentation limits preserve overrides and reject invalid saved values', async (t) => {
+    const paths = await directories(t);
+    const store = new RunStore({ root: paths.storage });
+    const run = await store.create({ repository: paths.repository, configuration: DEFAULT_CONFIGURATION });
+    const snapshot = JSON.parse(await readFile(store.recordPath(run.id), 'utf8'));
+    for (const key of ['resultMaxStringLength', 'resultMaxCollectionItems', 'resultMaxLength']) {
+        for (const invalid of [null, 0, -1, 1.5, '4000']) {
+            const configuration = { ...snapshot.configuration, [key]: invalid };
+            await writeFile(store.recordPath(run.id), JSON.stringify({ ...snapshot, configuration }));
+            await assert.rejects(store.read(run.id), /must be a positive integer/);
+        }
+        const configuration = { ...snapshot.configuration, [key]: 123 };
+        await writeFile(store.recordPath(run.id), JSON.stringify({ ...snapshot, configuration }));
+        assert.equal((await store.read(run.id)).configuration[key as keyof typeof DEFAULT_CONFIGURATION], 123);
+    }
 });
 
 test('updates are atomic and status transitions are validated', async (t) => {

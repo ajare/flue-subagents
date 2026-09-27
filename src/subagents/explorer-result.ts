@@ -1,5 +1,6 @@
 import {
     type ExplorerResult,
+    type ResultSizeLimits,
     ResultValidationError,
     validateSubagentResult,
 } from '../result-contracts.ts';
@@ -8,7 +9,7 @@ import {
  * Adapt presentation mistakes at the explorer boundary, not in the shared
  * validator. Required data is never inferred and persisted results stay strict.
  */
-export function normalizeExplorerResult(output: unknown): ExplorerResult {
+export function normalizeExplorerResult(output: unknown, limits?: ResultSizeLimits): ExplorerResult {
     let value = output;
     let appendix = '';
     if (typeof output === 'string') {
@@ -25,11 +26,11 @@ export function normalizeExplorerResult(output: unknown): ExplorerResult {
         const fence = /^```(?:json)?[ \t]*\r?\n/i.exec(source);
         if (fence) source = source.slice(fence[0].length).trimStart();
         const end = objectEnd(source);
-        if (end < 0) return validateSubagentResult('explorer', output);
+        if (end < 0) return validateSubagentResult('explorer', output, limits);
         try {
             value = JSON.parse(source.slice(0, end));
         } catch {
-            return validateSubagentResult('explorer', output);
+            return validateSubagentResult('explorer', output, limits);
         }
         appendix = source.slice(end).trim();
         if (fence)
@@ -67,9 +68,9 @@ export function normalizeExplorerResult(output: unknown): ExplorerResult {
             }),
         };
     }
-    const result = validateSubagentResult('explorer', value);
+    const result = validateSubagentResult('explorer', value, limits);
     return appendix
-        ? { ...result, findings: [...result.findings, appendix] }
+        ? validateSubagentResult('explorer', { ...result, findings: [...result.findings, appendix] }, limits)
         : result;
 }
 

@@ -3,6 +3,7 @@ import {
     validateSubagentResult,
     type SubagentResult,
     type SubagentRole,
+    type ResultDiagnostics,
 } from './result-contracts.ts';
 
 const text = v.pipe(v.string(), v.minLength(1));
@@ -21,6 +22,13 @@ const actionSchema = v.variant('type', [
         type: v.literal('malformed'),
         id: text,
         issues: v.array(text),
+        diagnostics: v.optional(v.strictObject({
+            reasonCode: v.picklist(['output_truncated', 'invalid_subagent_result']),
+            stopReason: v.optional(v.literal('length')),
+            configuredOutputTokenLimit: v.optional(v.number()),
+            outputTokens: v.optional(v.number()),
+            reachedValidation: v.boolean(),
+        })),
     }),
     v.strictObject({ type: v.literal('retry'), id: text }),
     v.strictObject({
@@ -51,7 +59,7 @@ export interface DelegationEntry {
     patchAfter: PatchIdentity | null;
     /** Epoch prevents an A -> B -> A mutation from reviving an old approval. */
     patchEpoch: number;
-    malformedResults: { at: string; issues: string[] }[];
+    malformedResults: { at: string; issues: string[]; diagnostics?: ResultDiagnostics }[];
     retries: number;
     result: SubagentResult | null;
     failure: string | null;
@@ -131,6 +139,7 @@ export function replayLedger(input: unknown): LedgerState {
             entry.malformedResults.push({
                 at,
                 issues: action.issues,
+                diagnostics: action.diagnostics,
             });
         } else if (action.type === 'retry') {
             if (entry.retries !== 0 || entry.malformedResults.length !== 1)
@@ -141,6 +150,9 @@ export function replayLedger(input: unknown): LedgerState {
                 entry.result = validateSubagentResult(
                     entry.role,
                     action.result,
+                    // Presentation budgets are enforced on submission, not replay;
+                    // runs may have used different configured limits.
+                    { maxStringLength: Infinity, maxCollectionItems: Infinity, maxResultLength: Infinity },
                 );
             } else entry.failure = action.message;
             entry.completedAt = at;
