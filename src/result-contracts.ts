@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { ResultCorrection } from './result-correction.ts';
 
 export const RESULT_CONTRACT_VERSION = 1 as const;
 
@@ -164,6 +165,15 @@ export function validateSubagentResult<Role extends SubagentRole>(
         }
     }
 
+    if (role === 'reviewer' && value && typeof value === 'object' && 'findings' in value && Array.isArray(value.findings)) {
+        value = { ...value, findings: value.findings.map(finding => {
+            if (!finding || typeof finding !== 'object') return finding;
+            const normalized = { ...finding };
+            for (const key of ['path', 'line']) if (normalized[key] === null) delete normalized[key];
+            return normalized;
+        }) };
+    }
+
     // The role-specific lookup makes the runtime check discriminated while the
     // generic return type preserves the role/result relationship for callers.
     const parsed = v.safeParse(resultSchemas[role], value);
@@ -172,7 +182,7 @@ export function validateSubagentResult<Role extends SubagentRole>(
             role,
             parsed.issues.map((issue) => ({
                 path: issuePath(issue),
-                message: issue.message,
+                message: issue.message.replace(/received (?!undefined\b)[\s\S]*/u, 'received invalid value'),
             })),
             output,
         );
@@ -250,29 +260,16 @@ export interface CorrectableDelegationOptions<Role extends SubagentRole> {
 export async function delegateWithValidatedResult<Role extends SubagentRole>(
     options: CorrectableDelegationOptions<Role>,
 ): Promise<ResultForRole<Role>> {
-    options.budget.consume(options.role);
-    const first = await options.delegate(options.prompt, {
-        attempt: 1,
-        corrective: false,
+    const correction = new ResultCorrection(options.role, {
+        prompt: options.prompt,
+        consume: () => options.budget.consume(options.role),
+        onMalformed: options.onMalformed,
     });
-    try {
-        return validateSubagentResult(options.role, first);
-    } catch (error) {
-        if (!(error instanceof ResultValidationError)) throw error;
-        await options.onMalformed?.(error);
-        options.budget.consume(options.role);
-        const corrected = await options.delegate(
-            correctivePrompt(options.role, error, options.prompt),
-            { attempt: 2, corrective: true },
-        );
-        try {
-            return validateSubagentResult(options.role, corrected);
-        } catch (error) {
-            if (error instanceof ResultValidationError)
-                await options.onMalformed?.(error);
-            throw error;
-        }
-    }
+    options.budget.consume(options.role);
+    const first = await options.delegate(options.prompt, { attempt: 1, corrective: false });
+    const prompt = await correction.submit(first);
+    if (prompt) await correction.submit(await options.delegate(prompt, { attempt: 2, corrective: true }));
+    return correction.result as ResultForRole<Role>;
 }
 
 /** The only roles whose failed work may be declared unnecessary. */
@@ -298,7 +295,9 @@ export function correctivePrompt(
         .join('\n');
     const task = originalPrompt ? `\nOriginal task:\n${originalPrompt}\n` : '';
     return `Your previous ${role} result did not satisfy result contract version ${RESULT_CONTRACT_VERSION}.
-Return only one corrected JSON object. Do not include Markdown fences or commentary.
+Repair only the result object; retain your investigation and do not repeat work.
+Follow the original OUTPUT CONTRACT in your system instructions, including required semantic fields.
+Return only one corrected JSON object (using submit_specialist_result when available). Do not include Markdown fences or commentary.
 ${task}
 Validation errors:
 ${problems}
@@ -316,13 +315,21 @@ function displayOutput(output: unknown): string {
     }
 }
 
+const contractKeys = new Set([
+    'schemaVersion', 'role', 'summary', 'findings', 'evidence', 'path', 'line',
+    'symbol', 'observation', 'openQuestions', 'steps', 'description',
+    'affectedFiles', 'affectedSymbols', 'tests', 'risks', 'changes', 'commands',
+    'command', 'scope', 'result', 'exitCode', 'unresolvedIssues', 'verdict',
+    'severity', 'validation', 'limitations',
+]);
+
 function issuePath(issue: v.BaseIssue<unknown>): string {
     if (!issue.path || issue.path.length === 0) return '$';
     return issue.path.reduce((path, item) => {
         const key = item.key;
         return typeof key === 'number'
             ? `${path}[${key}]`
-            : `${path}.${String(key)}`;
+            : `${path}.${contractKeys.has(String(key)) ? String(key) : '<unknown-field>'}`;
     }, '$');
 }
 

@@ -1,3 +1,4 @@
+import { useSpecialistResult } from '../agents/specialist-result.ts';
 import { defineSubagent, useTool } from '@flue/runtime';
 
 import {
@@ -7,6 +8,7 @@ import {
 } from '../tools/implementation-tools.ts';
 
 function Implementer() {
+    useSpecialistResult('implementer');
     useTool(writeFile);
     useTool(replaceText);
     useTool(runCommand);
@@ -40,8 +42,11 @@ WORKING METHOD
 
 OUTPUT CONTRACT
 
-Return only one JSON object, without Markdown fences or commentary, matching
-this exact shape:
+Call submit_specialist_result with the object below to finish your task.
+If it rejects your object, repair only the result, retaining your investigation.
+
+Submit one JSON object as the tool arguments, without Markdown fences or
+commentary, matching this exact shape:
 
 {
   "schemaVersion": 1,

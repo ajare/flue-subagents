@@ -24,6 +24,7 @@ import type { PatchManager } from './patch-publication.ts';
 import { ReviewBoundary } from './review-gating.ts';
 import { normalizeExplorerResult } from './subagents/explorer-result.ts';
 import { AgentNames } from './agent-names.ts';
+import { activeResultCorrection, ResultCorrection } from './result-correction.ts';
 
 const text = v.pipe(v.string(), v.minLength(1));
 export const orchestratorResultSchema = v.strictObject({
@@ -441,10 +442,19 @@ export class OrchestrationPolicyController {
             role: intent.role,
             task: taskSummary(intent.prompt, intent.role),
         });
+        const correction = new ResultCorrection(intent.role, {
+            prompt: intent.prompt,
+            consume: () => this.limits.consumeDelegation(intent.role),
+            onMalformed: async (error) => {
+                await append({ type: 'malformed', id: intent.id, issues: error.issues.map(issue => `${issue.path}: ${issue.message}`) });
+            },
+            onRetry: async () => { await append({ type: 'retry', id: intent.id }); },
+            validate: output => intent.role === 'explorer' ? normalizeExplorerResult(output) : validateSubagentResult(intent.role, output),
+        });
         try {
             this.limits.consumeDelegation(intent.role);
             const outcome = await Promise.resolve()
-                .then(next)
+                .then(() => activeResultCorrection.run(correction, next))
                 .then(
                     (value) => ({ ok: true as const, value }),
                     (error: unknown) => ({ ok: false as const, error }),
@@ -464,12 +474,13 @@ export class OrchestrationPolicyController {
             }
             if (!outcome.ok) throw outcome.error;
             const output = outcome.value;
-            const result =
+            if (correction.failure) throw correction.failure;
+            const result = correction.result ?? (
                 intent.role === 'explorer'
                     ? normalizeExplorerResult(taskResponseText(output))
-                    : validateSubagentResult(intent.role, taskResponseText(output));
+                    : validateSubagentResult(intent.role, taskResponseText(output)));
             await append({ type: 'result', id: intent.id, result });
-            if (intent.role === 'explorer') {
+            if (correction.result || intent.role === 'explorer') {
                 // Flue forwards this text as the task tool result. Do not send
                 // the unvalidated presentation back to the orchestrator.
                 const text = JSON.stringify(result);
@@ -483,7 +494,7 @@ export class OrchestrationPolicyController {
             }
             return output;
         } catch (error) {
-            if (error instanceof ResultValidationError) {
+            if (error instanceof ResultValidationError && error !== correction.failure) {
                 await append({
                     type: 'malformed',
                     id: intent.id,

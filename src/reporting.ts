@@ -37,6 +37,10 @@ export function publicEvents(run: RunRecord) {
             taskId: taskId ?? entry?.id,
             role: entry?.role,
             task: entry?.task,
+            contractError: entry?.malformedResults.length ? {
+                status: entry.result ? 'recovered' : entry.failure ? 'terminal' : 'correcting',
+                attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues })),
+            } : undefined,
             durationMs: entry?.completedAt
                 ? Date.parse(entry.completedAt) - Date.parse(entry.startedAt)
                 : undefined,
@@ -86,6 +90,12 @@ export async function buildReport(store: RunStore, id: string) {
         durationMs:
             Date.parse(run.timestamps.completedAt ?? run.timestamps.updatedAt) -
             Date.parse(run.timestamps.createdAt),
+        resultContractDiagnostics: state.delegations.filter(entry => entry.malformedResults.length > 0).map(entry => ({
+            role: entry.role,
+            taskId: entry.id,
+            status: entry.result ? 'recovered' : entry.failure ? 'terminal' : 'correcting',
+            attempts: entry.malformedResults.map((attempt, index) => ({ retryNumber: index, issues: attempt.issues })),
+        })),
         delegationDiagnostics: await loadDelegationDiagnostics(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         agentPerformance: await loadPerformanceSummary(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         changedFiles: patch?.changes.map((change) => change.path) ?? [],

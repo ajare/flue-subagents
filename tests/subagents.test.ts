@@ -168,17 +168,19 @@ test('mocked specialist delegations return valid contracts and isolated capabili
     assert.equal(childTurns.length, 4);
 
     const expectedCustomTools: Record<SubagentRole, readonly string[]> = {
-        explorer: ['inspect_repository'],
-        planner: ['inspect_repository'],
+        explorer: ['inspect_repository', 'submit_specialist_result'],
+        planner: ['inspect_repository', 'submit_specialist_result'],
         implementer: [
+            'submit_specialist_result',
             'implement_write_file',
             'implement_replace_text',
             'implement_run_command',
         ],
-        reviewer: ['review_run_command'],
+        reviewer: ['review_run_command', 'submit_specialist_result'],
     };
     const allCustomTools = [
         'inspect_repository',
+        'submit_specialist_result',
         'implement_write_file',
         'implement_replace_text',
         'implement_run_command',

@@ -20,6 +20,23 @@ role-specific result before persisting completion. Thus a direct model call to
 Flue's built-in `task` tool cannot bypass application limits, writer
 serialization, the durable ledger, or structured-result validation.
 
+Specialists finish using `submit_specialist_result`. Its arguments are checked
+inside the original child conversation: a malformed submission records schema
+issues, consumes one additional shared delegation attempt, and returns a
+corrective instruction to that same child. A second malformed submission is
+terminal. The task controller and programmatic delegation share the bounded
+`ResultCorrection` state machine; successful correction records `malformed`,
+`retry`, then `result`, without a failed delegation or a new agent name. Source
+snapshots surround the entire task, including correction. Flue 2.0.3 disallows
+subagent lifecycle hooks, so the finish tool performs the in-session check.
+Legacy valid text responses remain accepted; malformed text that bypasses the
+finish tool fails closed at the parent boundary.
+
+Public ledger events and inspection reports include recovered/terminal contract
+diagnostics with role, task ID, retry number and safe schema issues, never the
+raw rejected object. Optional reviewer finding `path` and `line` nulls are
+omitted before validation; required semantic fields are never invented.
+
 Explorer results have a presentation adapter at this boundary: it accepts a
 leading JSON object with an optional Markdown fence (including a missing closing
 fence), and preserves a trailing Markdown report headed with `#` as an additional
@@ -28,7 +45,7 @@ are omitted. Required fields are never inferred, broken JSON is not repaired,
 and ambiguous multiple result objects are rejected. The normalized result must
 still satisfy the strict explorer schema. Both the ledger and the task response
 sent to the orchestrator use that canonical result; the raw model response stays
-in the runtime conversation. Other specialist contracts are unchanged.
+in the runtime conversation.
 
 Every briefing requires non-empty `Objective:` and `Role task:` headings.
 The parser also accepts Markdown headings; for implementers only, an explicit

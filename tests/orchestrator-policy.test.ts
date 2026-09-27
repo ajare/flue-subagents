@@ -460,3 +460,90 @@ test('preflight precedes names, patch capture, gates and both budgets; corrected
         schemaVersion: 1, status: 'completed', summary: 'Done.', questions: [],
     }), ledger));
 });
+
+ test('runtime reviewer repairs the incident in the original delegation', async (t) => {
+    const { activeResultCorrection } = await import('../src/result-correction.ts');
+    const { controller, store, run, limits } = await fixture(t);
+    await store.update(run.id, { ledgerAction: { type: 'patch', patch: { revisionHash: 'revision', diffHash: 'diff' } } });
+    controller.registerDelegation({ id: 'incident', role: 'reviewer', prompt: briefing('Plan: None.\nDiff: None.\nValidation report: Passed.\nKnown limitations and unresolved issues: None.') });
+    const malformed = { schemaVersion: 1, role: 'reviewer', summary: 'Reviewed', findings: [{ severity: 'note', description: 'Checked', path: null, line: null }], validation: [], limitations: [] };
+    await controller.intercept({ type: 'task', taskId: 'incident' }, { instanceId: 'conversation' }, async () => {
+        const correction = activeResultCorrection.getStore();
+        assert.ok(correction);
+        const prompt = await correction.submit(malformed);
+        assert.ok(prompt);
+        assert.match(prompt, /\$\.verdict/);
+        assert.doesNotMatch(prompt.split('Previous output:')[0] ?? '', /\$\.findings/);
+        await correction.submit({ ...malformed, verdict: 'approved' });
+        return { text: '' };
+    });
+    assert.equal(limits.delegationBudget.used, 2);
+    const ledger = (await store.read(run.id)).ledger;
+    assert.deepEqual(ledger.map(e => e.action.type), ['patch', 'start', 'malformed', 'retry', 'result']);
+    assert.equal(replayLedger(ledger).delegations[0]?.failure, null);
+    const { buildReport, publicEvents } = await import('../src/reporting.ts');
+    assert.equal(publicEvents(await store.read(run.id)).at(-1)?.contractError?.status, 'recovered');
+    assert.equal((await buildReport(store, run.id)).resultContractDiagnostics[0]?.status, 'recovered');
+ });
+
+for (const role of ['explorer', 'planner', 'implementer', 'reviewer'] as const) {
+    test(`runtime ${role} permits only one correction`, async (t) => {
+        const { activeResultCorrection } = await import('../src/result-correction.ts');
+        const { controller, store, run } = await fixture(t);
+        await store.update(run.id, { ledgerAction: { type: 'patch', patch: { revisionHash: 'revision', diffHash: 'diff' } } });
+        controller.registerDelegation({ id: 'terminal', role, prompt: briefing('Plan: None.\nDiff: None.\nValidation report: Passed.\nKnown limitations and unresolved issues: None.') });
+        await assert.rejects(controller.intercept({ type: 'task', taskId: 'terminal' }, { instanceId: 'conversation' }, async () => {
+            const correction = activeResultCorrection.getStore();
+            assert.ok(correction);
+            assert.ok(await correction.submit({}));
+            await assert.rejects(correction.submit({}));
+            await assert.rejects(correction.submit({}));
+            return { text: '{}' };
+        }));
+        const ledger = (await store.read(run.id)).ledger;
+        assert.deepEqual(ledger.map(e => e.action.type), ['patch', 'start', 'malformed', 'retry', 'malformed', 'failure']);
+        const { publicEvents } = await import('../src/reporting.ts');
+        assert.equal(publicEvents(await store.read(run.id)).at(-1)?.contractError?.status, 'terminal');
+        assert.equal(publicEvents(await store.read(run.id)).at(-1)?.contractError?.attempts.length, 2);
+    });
+}
+
+test('runtime correction cannot bypass the shared attempt budget', async (t) => {
+    const { activeResultCorrection } = await import('../src/result-correction.ts');
+    const { controller, store, run, limits } = await fixture(t, { maxDelegations: 1 });
+    controller.registerDelegation({ id: 'limited', role: 'planner', prompt: briefing() });
+    await assert.rejects(controller.intercept({ type: 'task', taskId: 'limited' }, { instanceId: 'conversation' }, async () => {
+        const correction = activeResultCorrection.getStore();
+        assert.ok(correction);
+        await correction.submit({});
+        assert.fail('correction should not run');
+    }));
+    assert.equal(limits.delegationBudget.used, 1);
+    const record = await store.read(run.id);
+    assert.equal(record.status, 'blocked');
+    assert.deepEqual(record.ledger.map(e => e.action.type), ['start', 'malformed', 'failure']);
+});
+
+test('review source boundary includes corrective continuation', async (t) => {
+    const { activeResultCorrection } = await import('../src/result-correction.ts');
+    const { store, run, limits } = await fixture(t);
+    await store.update(run.id, { ledgerAction: { type: 'patch', patch: { revisionHash: 'original', diffHash: 'diff' } } });
+    let revisionHash = 'original';
+    const patches = {
+        latest: async () => undefined,
+        capture: async () => ({ revisionHash, sequence: 1 }),
+    } as unknown as PatchManager;
+    const controller = new OrchestrationPolicyController({ conversationId: 'conversation', store, runId: run.id, limits, patches });
+    controller.registerDelegation({ id: 'mutation', role: 'reviewer', prompt: briefing('Plan: None.\nDiff: None.\nValidation report: Passed.\nKnown limitations and unresolved issues: None.') });
+    await assert.rejects(controller.intercept({ type: 'task', taskId: 'mutation' }, { instanceId: 'conversation' }, async () => {
+        const correction = activeResultCorrection.getStore();
+        assert.ok(correction);
+        await correction.submit({});
+        revisionHash = 'mutated-during-correction';
+        await correction.submit({ schemaVersion: 1, role: 'reviewer', verdict: 'approved', summary: 'Reviewed', findings: [], validation: [], limitations: [] });
+        return { text: '' };
+    }), /Reviewer changed source/);
+    const record = await store.read(run.id);
+    assert.equal(record.status, 'blocked');
+    assert.deepEqual(record.ledger.map(e => e.action.type), ['patch', 'start', 'malformed', 'retry', 'failure']);
+});

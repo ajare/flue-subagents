@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
+import { observe, type FlueObservation } from '@flue/runtime';
 import { createExecutionRequest, executeRequest } from '../src/cli.ts';
 import {
     completionEligibility,
@@ -33,7 +34,7 @@ const answer = (value: object) => fauxAssistantMessage(JSON.stringify(value));
 const tool = (name: string, args: Record<string, unknown>) =>
     fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' });
 
-for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
+for (const mode of ['no-commit', 'commit', 'rejected', 'malformed', 'corrected'] as const) {
     test(`production runner disposable repository: ${mode}`, async (t) => {
         const repo = await createGitFixture(t);
         const before = await repo.git('rev-parse', 'HEAD');
@@ -65,7 +66,12 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
             tool('review_run_command', {
                 command: 'grep -qx Accepted README.md',
             }),
-            answer({
+            ...(mode === 'corrected' ? [tool('submit_specialist_result', {
+                schemaVersion: 1, role: 'reviewer', summary: 'Checked README',
+                findings: [{ severity: 'note', description: 'Checked', path: null, line: null }],
+                validation: [], limitations: [],
+            })] : []),
+            (mode === 'corrected' ? (value: Record<string, unknown>) => tool('submit_specialist_result', value) : answer)({
                 schemaVersion: 1,
                 role: 'reviewer',
                 summary: 'Checked README',
@@ -99,6 +105,9 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
                       questions: [],
                   }),
         ]);
+        const observations: FlueObservation[] = [];
+        const unsubscribe = observe(event => { observations.push(event); });
+        t.after(unsubscribe);
         const events: object[] = [];
         let id = '';
         const run = () =>
@@ -134,6 +143,20 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
             ));
         }
         assert.ok(record.ledger.some((event) => event.agent === 'orchestrator'));
+        if (mode === 'corrected') {
+            const reviewer = replayLedger(record.ledger).delegations.find(entry => entry.role === 'reviewer');
+            assert.ok(reviewer);
+            const tasks = observations.filter(event => event.type === 'task_start' && event.agent === 'reviewer');
+            assert.equal(tasks.length, 1);
+            const submissions = observations.filter(event => event.type === 'tool' && event.toolName === 'submit_specialist_result');
+            assert.equal(submissions.length, 2);
+            assert.equal(new Set(submissions.map(event => event.conversationId)).size, 1);
+            assert.equal(submissions[0]?.conversationId, tasks[0]?.conversationId);
+            assert.equal(reviewer.failure, null);
+            assert.equal(reviewer.retries, 1);
+            assert.match(reviewer.malformedResults[0]?.issues.join() ?? '', /\$\.verdict/);
+            assert.deepEqual(record.ledger.filter(e => 'id' in e.action && e.action.id === reviewer.id).map(e => e.action.type), ['start', 'malformed', 'retry', 'result']);
+        }
         const failed = mode === 'rejected' || mode === 'malformed';
         assert.equal(
             record.status,
@@ -170,7 +193,7 @@ for (const mode of ['no-commit', 'commit', 'rejected', 'malformed'] as const) {
         assert.equal(await repo.git('diff', '--cached'), '');
         assert.equal(
             await repo.git('status', '--porcelain'),
-            mode === 'no-commit' ? ' M README.md' : '',
+            (mode === 'no-commit' || mode === 'corrected') ? ' M README.md' : '',
         );
         if (mode === 'commit') {
             assert.equal(
