@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.ts';
 import { DEFAULT_CONFIGURATION } from '../src/config.ts';
+import { replayLedger } from '../src/delegation-ledger.ts';
 import {
     buildReport,
     cleanupRun,
@@ -16,6 +17,8 @@ import {
 } from '../src/reporting.ts';
 import { lockRun } from '../src/resumption.ts';
 import { RunStore } from '../src/run-storage.ts';
+import { ExecutionTelemetry } from '../src/execution-telemetry.ts';
+import type { FlueObservation } from '@flue/runtime';
 import { createGitFixture } from './helpers/git.ts';
 
 async function fixture(t: TestContext) {
@@ -94,6 +97,44 @@ test('reports share outcomes and highlight limitations without reading private c
     assert.ok(events.every((event) => !('at' in event) && !('timestamp' in event)));
     assert.equal(events[2]?.verdict, 'approved_with_limitations');
     assert.ok(events[2]?.durationMs !== undefined);
+});
+
+test('inspect reconstructs safe preflight rejections, without failed specialist spans or names', async (t) => {
+    const { store, run } = await fixture(t);
+    const published: object[] = [];
+    const telemetry = new ExecutionTelemetry(join(store.runDirectory(run.id), 'execution-telemetry.jsonl'), run.id, 'conversation', 16, 100, (event) => published.push(event));
+    const emit = (event: object) => telemetry.observe({
+        instanceId: 'conversation', timestamp: '2026-01-01T00:00:00.000Z', ...event,
+    } as FlueObservation);
+    const review = 'Role task: PRIVATE_PROMPT\nPlan: None\nDiff: None\nValidation report: None\nKnown limitations and unresolved issues: None';
+    emit({ type: 'task_start', taskId: 'bad', agent: 'reviewer', prompt: review });
+    emit({ type: 'task', taskId: 'bad', agent: 'reviewer', isError: true, result: 'PRIVATE_ERROR' });
+    emit({ type: 'task_start', taskId: 'unknown', agent: 'PRIVATE_ROLE', prompt: 'PRIVATE_PROMPT' });
+    emit({ type: 'task', taskId: 'unknown', agent: 'PRIVATE_ROLE', isError: true });
+    emit({ type: 'task_start', taskId: 'good', agent: 'reviewer', prompt: `Objective: Review.\n${review}` });
+    emit({ type: 'task', taskId: 'good', agent: 'reviewer', isError: false });
+    telemetry.finish('completed');
+    assert.equal(published.length, 2);
+    assert.deepEqual((published[0] as { missingSections: string[] }).missingSections, ['Objective']);
+    assert.doesNotMatch(JSON.stringify(published), /PRIVATE/);
+    assert.deepEqual(replayLedger((await store.read(run.id)).ledger).delegations, []);
+    for (const json of [false, true]) {
+        let output = '';
+        assert.equal(await runCli(['inspect', run.id, ...(json ? ['--json'] : [])], {
+            env: { FLUE_AGENT_DATA_DIR: store.root },
+            stdout: { write: (value) => { output += value; return true; } },
+            stderr: { write: () => true },
+        }), 0);
+        assert.match(output, /delegation_rejected/);
+        assert.match(output, /incomplete_briefing/);
+        assert.match(output, /Objective/);
+        assert.match(output, /unauthorized_role/);
+        assert.doesNotMatch(output, /PRIVATE|reviewer-2/);
+        if (json) assert.deepEqual(JSON.parse(output).delegationDiagnostics[0].missingSections, ['Objective']);
+    }
+    const records = (await readFile(join(store.runDirectory(run.id), 'execution-telemetry.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(records.filter((event) => event.type === 'subagent_start').map((event) => event.agent), ['reviewer-1']);
+    assert.deepEqual(records.filter((event) => event.type === 'subagent_end').map((event) => event.status), ['completed']);
 });
 
 test('exit code mapping covers every lifecycle status', () => {

@@ -3,6 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { type FlueObservation, observe } from '@flue/runtime';
 import { takeProviderStats } from './provider-stats.ts';
 import { AgentNames } from './agent-names.ts';
+import { delegationRejection } from './orchestrator-policy.ts';
 
 interface Span {
     startedAt: string;
@@ -73,6 +74,22 @@ export class ExecutionTelemetry {
             });
         }
         if (event.type === 'task_start') {
+            const rejection = delegationRejection(event.agent, event.prompt);
+            if (rejection) {
+                const output = {
+                    type: 'event',
+                    event: 'delegation_rejected',
+                    runId: this.runId,
+                    promptId: this.promptId,
+                    ts: Date.parse(event.timestamp),
+                    agent: 'orchestrator',
+                    taskId: event.taskId,
+                    ...rejection,
+                };
+                this.record(output);
+                this.onEvent?.(output);
+                return;
+            }
             this.tasks.set(event.taskId, {
                 startedAt: event.timestamp,
                 outputTokens: 0,
@@ -159,6 +176,27 @@ export class ExecutionTelemetry {
             }
         } else if (event.type === 'task') {
             const span = this.tasks.get(event.taskId);
+            // Rejected task-tool input never started a specialist span.
+            if (!span) return;
+            const failure = event.isError ? {
+                reasonCode: 'specialist_execution_failed',
+                message: 'Specialist execution failed.',
+            } : {};
+            if (event.isError) {
+                const output = {
+                    type: 'event',
+                    event: 'delegation_failed',
+                    runId: this.runId,
+                    promptId: this.promptId,
+                    ts: Date.parse(event.timestamp),
+                    taskId: event.taskId,
+                    agent: span.agent,
+                    ...failure,
+                };
+                // Runtime result/error text may contain private model or command output.
+                this.record(output);
+                this.onEvent?.(output);
+            }
             this.record({
                 type: 'subagent_end',
                 taskId: event.taskId,
@@ -173,6 +211,7 @@ export class ExecutionTelemetry {
                 usageComplete: span?.usageComplete ?? false,
                 endedAt: event.timestamp,
                 status: event.isError ? 'failed' : 'completed',
+                ...failure,
             });
             this.tasks.delete(event.taskId);
         }

@@ -16,6 +16,9 @@ import {
     validateOrchestratorResult,
 } from '../src/orchestrator-policy.ts';
 import { RunStore } from '../src/run-storage.ts';
+import { AgentNames } from '../src/agent-names.ts';
+import { PatchManager } from '../src/patch-publication.ts';
+import type { SubagentRole } from '../src/result-contracts.ts';
 
 const briefing = (extra = '') => `Objective: Implement a bounded change.
 Acceptance criteria: Focused tests pass.
@@ -56,7 +59,7 @@ async function fixture(
         runId: run.id,
         limits,
     });
-    return { store, run, controller };
+    return { store, run, controller, limits };
 }
 
 test('policy is application-owned and makes delegation proportionate', () => {
@@ -363,7 +366,7 @@ test('task-tool budget exhaustion blocks the run', async (t) => {
     );
 });
 
-test('missing required task context is persisted as an orchestration failure', async (t) => {
+test('missing required task context is rejected without a delegation failure', async (t) => {
     const { store, run, controller } = await fixture(t);
     controller.registerDelegation({
         id: 'incomplete',
@@ -379,20 +382,81 @@ test('missing required task context is persisted as an orchestration failure', a
         OrchestrationDefectError,
     );
     const ledger = (await store.read(run.id)).ledger;
-    const entry = replayLedger(ledger).delegations[0];
-    assert.match(entry?.failure ?? '', /Incomplete implementer briefing/);
-    assert.equal(entry?.result, null);
+    assert.deepEqual(replayLedger(ledger).delegations, []);
     const completed = validateOrchestratorResult({
         schemaVersion: 1,
         status: 'completed',
         summary: 'Done.',
         questions: [],
-        failureWaivers: [
-            { delegationId: 'incomplete', reason: 'No longer needed.' },
-        ],
+        failureWaivers: [],
     });
-    assert.throws(
-        () => assertOrchestrationIntegrity(completed, ledger),
-        /Unresolved implementer delegation failure/,
-    );
+    assert.doesNotThrow(() => assertOrchestrationIntegrity(completed, ledger));
+});
+
+
+test('preflight precedes names, patch capture, gates and both budgets; corrected reviewer is reviewer-1', async (t) => {
+    const { store, run, limits } = await fixture(t, { maxDelegations: 1 });
+    const names = new AgentNames(join(store.runDirectory(run.id), 'names.json'));
+    const patches = new PatchManager(store);
+    const capture = t.mock.method(patches, 'capture', async () => undefined);
+    const latest = t.mock.method(patches, 'latest', async () => undefined);
+    const readOnly = t.mock.method(limits, 'runReadOnly');
+    const writer = t.mock.method(limits, 'runImplementer');
+    const controller = new OrchestrationPolicyController({
+        conversationId: 'conversation', store, runId: run.id, limits, agentNames: names, patches,
+    });
+    const review = 'Role task: Review.\nPlan: None.\nDiff: Inspect workspace.\nValidation report: Tests passed.\nKnown limitations and unresolved issues: None.';
+    const invalid = [
+        { role: 'reviewer', prompt: review, missing: ['Objective'] },
+        { role: 'reviewer', prompt: briefing(), missing: ['Plan', 'Diff', 'Validation report', 'Known limitations and unresolved issues'] },
+        { role: 'implementer', prompt: 'Objective: Change.', missing: ['Role task'] },
+        { role: 'explorer', prompt: 'Role task: Explore.', missing: ['Objective'] },
+        { role: 'unauthorized PRIVATE', prompt: briefing(), missing: [] },
+    ];
+    for (const [index, input] of invalid.entries()) {
+        const id = `invalid-${index}`;
+        controller.registerDelegation({ id, role: input.role as SubagentRole, prompt: input.prompt });
+        await assert.rejects(controller.intercept(
+            { type: 'task', taskId: id }, { instanceId: 'conversation' },
+            async () => { assert.fail('invalid input reached specialist'); },
+        ), (error: unknown) => {
+            assert.ok(error instanceof OrchestrationDefectError);
+            assert.deepEqual(error.missingSections, input.missing);
+            assert.equal(error.reasonCode, input.missing.length ? 'incomplete_briefing' : 'unauthorized_role');
+            return true;
+        });
+    }
+    assert.equal(readOnly.mock.callCount(), 0);
+    assert.equal(writer.mock.callCount(), 0);
+    assert.equal(capture.mock.callCount(), 0);
+    assert.equal(latest.mock.callCount(), 0);
+    assert.equal(limits.delegationBudget.used, 0);
+    assert.equal(limits.repairCyclesUsed, 0);
+    assert.deepEqual((await store.read(run.id)).ledger, []);
+    await store.update(run.id, { ledgerAction: { type: 'patch', patch: { revisionHash: 'revision', diffHash: 'diff' } } });
+    controller.registerDelegation({ id: 'valid', role: 'reviewer', prompt: `Objective: Review.\n${review}` });
+    await controller.intercept({ type: 'task', taskId: 'valid' }, { instanceId: 'conversation' }, async () => ({ text: JSON.stringify({
+        schemaVersion: 1, role: 'reviewer', verdict: 'approved', summary: 'Approved.', findings: [], validation: [], limitations: [],
+    }) }));
+    const ledger = (await store.read(run.id)).ledger;
+    assert.equal(ledger.find((event) => event.action.type === 'start')?.agent, 'reviewer-1');
+    assert.equal(limits.delegationBudget.used, 1);
+    assert.equal(new AgentNames(join(store.runDirectory(run.id), 'names.json')).get('valid', 'reviewer'), 'reviewer-1');
+    // Even after review (and with the delegation budget exhausted), invalid
+    // repair input must not consume a repair cycle or acquire a writer slot.
+    const captures = capture.mock.callCount();
+    controller.registerDelegation({ id: 'invalid-repair', role: 'implementer', prompt: 'Role task: Repair.' });
+    await assert.rejects(controller.intercept(
+        { type: 'task', taskId: 'invalid-repair' }, { instanceId: 'conversation' },
+        async () => { assert.fail('invalid repair executed'); },
+    ), { reasonCode: 'incomplete_briefing' });
+    assert.equal(limits.repairCyclesUsed, 0);
+    assert.equal(limits.delegationBudget.used, 1);
+    assert.equal(writer.mock.callCount(), 0);
+    assert.equal(capture.mock.callCount(), captures);
+    assert.deepEqual((await store.read(run.id)).ledger, ledger);
+    assert.equal((await store.read(run.id)).status, 'running');
+    assert.doesNotThrow(() => assertOrchestrationIntegrity(validateOrchestratorResult({
+        schemaVersion: 1, status: 'completed', summary: 'Done.', questions: [],
+    }), ledger));
 });

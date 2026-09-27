@@ -86,6 +86,7 @@ export async function buildReport(store: RunStore, id: string) {
         durationMs:
             Date.parse(run.timestamps.completedAt ?? run.timestamps.updatedAt) -
             Date.parse(run.timestamps.createdAt),
+        delegationDiagnostics: await loadDelegationDiagnostics(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         agentPerformance: await loadPerformanceSummary(join(store.runDirectory(id), 'execution-telemetry.jsonl')),
         changedFiles: patch?.changes.map((change) => change.path) ?? [],
         validation: results.flatMap((result) =>
@@ -129,6 +130,9 @@ export function formatReport(report: RunReport): string {
         report.reducedConfidence ? 'WARNING: REDUCED-CONFIDENCE APPROVAL' : '',
         ...report.risks.map((risk) => `UNRESOLVED RISK: ${risk}`),
         report.summary ?? '',
+        ...report.delegationDiagnostics.map((event) =>
+            `${event.event}: ${event.role ?? event.agent} — ${event.reasonCode}: ${event.message}${event.missingSections.length ? ` (${event.missingSections.join(', ')})` : ''}`,
+        ),
         `Changed files: ${report.changedFiles.join(', ') || 'none'}`,
         ...report.validation.map(
             (check) =>
@@ -188,6 +192,48 @@ export async function cleanupRun(
         await unlock();
     }
 }
+/** Reconstruct only application-owned diagnostics, never runtime result/error text. */
+async function loadDelegationDiagnostics(path: string) {
+    let source: string;
+    try {
+        source = await readFile(path, 'utf8');
+    } catch (error) {
+        if (isMissing(error)) return [];
+        throw error;
+    }
+    return source.split('\n').flatMap((line) => {
+        if (!line.trim()) return [];
+        let event: unknown;
+        try { event = JSON.parse(line); } catch { return []; }
+        if (!event || typeof event !== 'object' ||
+            !('event' in event) || typeof event.event !== 'string' ||
+            !['delegation_rejected', 'delegation_failed'].includes(event.event) ||
+            !('reasonCode' in event) || typeof event.reasonCode !== 'string' ||
+            !('taskId' in event) || typeof event.taskId !== 'string' ||
+            !('agent' in event) || typeof event.agent !== 'string') return [];
+        const messages: Record<string, string> = {
+            incomplete_briefing: 'Incomplete specialist briefing; missing required sections.',
+            unauthorized_role: 'Delegation selected an unauthorized role.',
+            specialist_execution_failed: 'Specialist execution failed.',
+        };
+        const message = Object.hasOwn(messages, event.reasonCode) ? messages[event.reasonCode] : undefined;
+        if (!message) return [];
+        return [{
+            event: event.event,
+            ts: 'ts' in event && typeof event.ts === 'number' ? event.ts : undefined,
+            taskId: event.taskId,
+            agent: event.agent,
+            role: 'role' in event && typeof event.role === 'string' ? event.role : undefined,
+            reasonCode: event.reasonCode,
+            message,
+            missingSections: 'missingSections' in event && Array.isArray(event.missingSections)
+                ? event.missingSections.filter((section: unknown) =>
+                    ['Objective', 'Role task', 'Plan', 'Diff', 'Validation report', 'Known limitations and unresolved issues'].includes(section as string)) as string[]
+                : [],
+        }];
+    });
+}
+
 function isMissing(error: unknown): boolean {
     return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }

@@ -47,12 +47,14 @@ export type OrchestratorResult = v.InferOutput<typeof orchestratorResultSchema>;
 export class OrchestrationDefectError extends Error {
     readonly code = 'orchestration_defect';
     readonly taskId?: string;
+    readonly reasonCode?: 'incomplete_briefing' | 'unauthorized_role';
     readonly missingSections: readonly string[];
 
     constructor(
         message: string,
         options: {
             taskId?: string;
+            reasonCode?: 'incomplete_briefing' | 'unauthorized_role';
             missingSections?: readonly string[];
             cause?: unknown;
         } = {},
@@ -60,6 +62,7 @@ export class OrchestrationDefectError extends Error {
         super(message, { cause: options.cause });
         this.name = 'OrchestrationDefectError';
         this.taskId = options.taskId;
+        this.reasonCode = options.reasonCode;
         this.missingSections = Object.freeze([
             ...(options.missingSections ?? []),
         ]);
@@ -200,7 +203,7 @@ export function assertSelfContainedBriefing(
     if (missing.length !== 0) {
         throw new OrchestrationDefectError(
             `Incomplete ${role} briefing; missing sections: ${missing.join(', ')}`,
-            { taskId, missingSections: missing },
+            { taskId, reasonCode: 'incomplete_briefing', missingSections: missing },
         );
     }
 }
@@ -263,6 +266,29 @@ function parseBriefingSections(
     return new Map(
         [...sections].map(([name, content]) => [name, content.trim()]),
     );
+}
+
+/** Pure preflight, shared with telemetry so observer ordering cannot allocate names. */
+export function preflightDelegation(role: unknown, prompt: string, taskId?: string): void {
+    if (!isSubagentRole(role)) {
+        throw new OrchestrationDefectError('Delegation selected an unauthorized role', { taskId, reasonCode: 'unauthorized_role' });
+    }
+    assertSelfContainedBriefing(role, prompt, taskId);
+}
+
+export function delegationRejection(role: unknown, prompt: string) {
+    try {
+        preflightDelegation(role, prompt);
+        return null;
+    } catch (error) {
+        if (!(error instanceof OrchestrationDefectError)) throw error;
+        return {
+            role: isSubagentRole(role) ? role : 'unknown',
+            reasonCode: error.reasonCode,
+            message: error.message,
+            missingSections: [...error.missingSections],
+        };
+    }
 }
 
 interface DelegationIntent {
@@ -328,7 +354,6 @@ export class OrchestrationPolicyController {
 
     /** Public for deterministic adapters and tests that do not use observe(). */
     registerDelegation(intent: DelegationIntent): void {
-        this.agentNames.get(intent.id, intent.role);
         this.intents.set(intent.id, { ...intent });
     }
 
@@ -352,12 +377,10 @@ export class OrchestrationPolicyController {
                 { taskId: operation.taskId },
             );
         }
-        if (!isSubagentRole(intent.role)) {
-            throw new OrchestrationDefectError(
-                `Delegation ${operation.taskId} selected an unauthorized role`,
-                { taskId: operation.taskId },
-            );
-        }
+        // Reject tool input before names, budgets, gates, patch capture or ledger writes.
+        // Remove the intent even on preflight failure; a retry is a new task call.
+        this.intents.delete(operation.taskId);
+        preflightDelegation(intent.role, intent.prompt, intent.id);
 
         const run = () =>
             intent.role === 'implementer' || intent.role === 'reviewer'
@@ -420,7 +443,6 @@ export class OrchestrationPolicyController {
         });
         try {
             this.limits.consumeDelegation(intent.role);
-            assertSelfContainedBriefing(intent.role, intent.prompt, intent.id);
             const outcome = await Promise.resolve()
                 .then(next)
                 .then(

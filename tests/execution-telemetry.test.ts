@@ -25,13 +25,13 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
             type: 'task_start',
             taskId: 'a',
             agent: 'explorer',
-            prompt: 'secret',
+            prompt: 'Objective: secret\nRole task: secret',
         });
         emit({
             type: 'task_start',
             taskId: 'b',
             agent: 'planner',
-            prompt: 'secret',
+            prompt: 'Objective: secret\nRole task: secret',
         });
         emit({
             type: 'turn',
@@ -60,7 +60,7 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
             isError: false,
         });
         emit({ type: 'task_start', taskId: 'ignored', instanceId: 'other' });
-        emit({ type: 'task_start', taskId: 'interrupted' });
+        emit({ type: 'task_start', taskId: 'interrupted', agent: 'explorer', prompt: 'Objective: secret\nRole task: secret' });
         telemetry.finish('interrupted');
         const second = new ExecutionTelemetry(path, 'run', 'conversation', 16, 100);
         second.finish('completed');
@@ -91,8 +91,9 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
         assert.deepEqual(outputs.map((e) => e.agent), ['explorer-1', 'planner-1', 'explorer-1', 'planner-1', 'orchestrator']);
         assert.deepEqual(outputs.map((e) => e.taskId), ['a', 'b', 'a', 'b', undefined]);
         assert.ok(outputs.every((e) => Number.isInteger(e.ts)));
-        assert.equal(published.length, outputs.length);
-        assert.deepEqual(JSON.parse(JSON.stringify(published)), outputs.map(({ schemaVersion, ...event }) => event));
+        assert.equal(published.length, outputs.length + 1);
+        assert.deepEqual(JSON.parse(JSON.stringify(published)), records.filter((event) => event.type === 'event').map(({ schemaVersion, ...event }) => event));
+        assert.equal(records.find((event) => event.event === 'delegation_failed').reasonCode, 'specialist_execution_failed');
         assert.notEqual(telemetry.promptId, second.promptId);
         assert.ok(!raw.includes('secret'));
         assert.ok(!raw.includes('ignored'));
@@ -113,7 +114,7 @@ test('telemetry shares names across prompt continuations and same-role tasks', a
         for (const taskId of ids) {
             telemetry.observe({
                 type: 'task_start', instanceId: 'conversation', taskId,
-                agent: 'explorer', timestamp: '2026-01-01T00:00:00.000Z',
+                agent: 'explorer', prompt: 'Objective: Explore.\nRole task: Inspect.', timestamp: '2026-01-01T00:00:00.000Z',
             } as FlueObservation);
         }
         telemetry.finish('interrupted');
