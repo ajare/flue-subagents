@@ -1,8 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, type Hash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import {
     chmod,
     lstat,
     mkdir,
+    readdir,
     readFile,
     readlink,
     rename,
@@ -31,6 +33,12 @@ export interface FileImage {
     data: string;
 }
 type Snapshot = Record<string, FileImage | null>;
+type OpaqueDirectories = Record<string, string>;
+interface WorkspaceObservation {
+    files: Snapshot;
+    /** Digests only: opaque directories are revision-bound but never publishable. */
+    opaqueDirectories: OpaqueDirectories;
+}
 export interface PatchChange {
     path: string;
     before: FileImage | null;
@@ -50,6 +58,8 @@ export interface PatchBaseline {
     git: GitPreflightResult;
     files: Snapshot;
     tracked: string[];
+    /** Absent on legacy baselines created before opaque-directory observation. */
+    opaqueDirectories?: OpaqueDirectories;
 }
 interface Journal {
     version: 1;
@@ -81,15 +91,20 @@ export class PatchManager {
             git.repository.root,
             this.env,
         );
-        const files = await this.snapshot(git.repository.root, tracked);
+        const original = await this.observe(git.repository.root, tracked);
         await assertGitFingerprint(git, { env: this.env });
-        const copied = await this.snapshot(run.locations.workspace, tracked);
-        if (hash(files) !== hash(copied))
+        const copied = await this.observe(run.locations.workspace, tracked);
+        if (observationHash(original) !== observationHash(copied))
             throw new Error('Workspace baseline differs');
         await mkdir(this.directory(id), { recursive: true });
         await writeFile(
             join(this.directory(id), 'baseline.json'),
-            JSON.stringify({ git, files, tracked }),
+            JSON.stringify({
+                git,
+                files: original.files,
+                tracked,
+                opaqueDirectories: original.opaqueDirectories,
+            }),
             { flag: 'wx', mode: 0o600 },
         );
         await this.capture(id);
@@ -189,8 +204,11 @@ export class PatchManager {
                     throw new Error('Workspace changed since approval');
                 await assertGitFingerprint(baseline.git, { env: this.env });
                 // Also checks raw bytes (including tracked files hidden by index flags).
-                const original = await this.snapshot(root, baseline.tracked);
-                if (hash(original) !== hash(baseline.files))
+                const original = await this.observe(root, baseline.tracked);
+                if (
+                    observationHash(original) !==
+                    observationHash(baselineObservation(baseline))
+                )
                     throw new Error('Original repository changed');
                 const directories = new Set<string>();
                 for (const change of current.changes) {
@@ -231,9 +249,13 @@ export class PatchManager {
                             delete expected[change.path];
                         else expected[change.path] = change.after;
                     }
+                    const observed = await this.observe(root, baseline.tracked);
                     if (
-                        hash(await this.snapshot(root, baseline.tracked)) !==
-                        hash(sortSnapshot(expected))
+                        observationHash(observed) !==
+                        observationHash({
+                            files: sortSnapshot(expected),
+                            opaqueDirectories: baseline.opaqueDirectories ?? {},
+                        })
                     )
                         throw new Error(
                             'Concurrent repository change during publication',
@@ -328,9 +350,18 @@ export class PatchManager {
         const workspace = run.locations.workspace;
         if (!workspace) throw new Error('Run has no workspace');
         const approvedNewFiles = [...new Set(manifest)].sort();
-        const files = await this.snapshot(workspace, baseline.tracked);
+        const observed = await this.observe(workspace, baseline.tracked);
+        const files = observed.files;
         for (const path of approvedNewFiles) {
             validatePath(path);
+            const opaqueParent = Object.keys(observed.opaqueDirectories).find(
+                (directory) =>
+                    path === directory || path.startsWith(`${directory}/`),
+            );
+            if (opaqueParent)
+                throw new Error(
+                    `Manifest path is inside non-publishable opaque directory: ${opaqueParent}`,
+                );
             if (baseline.tracked.includes(path))
                 throw new Error(`Manifest path is already tracked: ${path}`);
             const ignored = await runGit(
@@ -349,7 +380,7 @@ export class PatchManager {
             const after = files[path] ?? null;
             if (!equal(before, after)) changes.push({ path, before, after });
         }
-        const workspaceHash = hash(files);
+        const workspaceHash = observationHash(observed);
         const diffHash = hash(changes);
         const patchHash = hash({ version: 1, diffHash, approvedNewFiles });
         const revisionHash = hash({ workspaceHash, patchHash });
@@ -365,19 +396,43 @@ export class PatchManager {
         };
     }
 
-    private async snapshot(root: string, tracked: string[]): Promise<Snapshot> {
+    private async observe(
+        root: string,
+        tracked: string[],
+    ): Promise<WorkspaceObservation> {
         const names = await this.names(root, [
             'ls-files',
             '--others',
             '--exclude-standard',
             '-z',
         ]);
-        const result: Snapshot = Object.create(null) as Snapshot;
-        for (const path of [...new Set([...tracked, ...names])].sort()) {
+        const opaqueDirectories: OpaqueDirectories = Object.create(
+            null,
+        ) as OpaqueDirectories;
+        const ordinaryNames: string[] = [];
+        for (const name of names) {
+            if (!name.endsWith('/')) {
+                ordinaryNames.push(name);
+                continue;
+            }
+            const path = name.slice(0, -1);
             validatePath(path);
-            result[path] = await image(root, path);
+            const entry = await lstat(join(root, path));
+            if (!entry.isDirectory() || entry.isSymbolicLink())
+                throw new Error(`Unsupported opaque workspace path: ${name}`);
+            opaqueDirectories[path] = await opaqueDirectoryDigest(root, path);
         }
-        return result;
+        const files: Snapshot = Object.create(null) as Snapshot;
+        for (const path of [
+            ...new Set([...tracked, ...ordinaryNames]),
+        ].sort()) {
+            validatePath(path);
+            files[path] = await image(root, path);
+        }
+        return {
+            files,
+            opaqueDirectories: sortStrings(opaqueDirectories),
+        };
     }
     private async names(root: string, args: string[]): Promise<string[]> {
         const { stdout } = await runGit({ cwd: root, env: this.env }, args);
@@ -509,12 +564,95 @@ async function json<T>(path: string): Promise<T> {
 function hash(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
+
+function observationHash(observation: WorkspaceObservation): string {
+    // Preserve revision hashes for workspaces without opaque directories.
+    return Object.keys(observation.opaqueDirectories).length === 0
+        ? hash(observation.files)
+        : hash({
+              files: observation.files,
+              opaqueDirectories: observation.opaqueDirectories,
+          });
+}
+
+function baselineObservation(baseline: PatchBaseline): WorkspaceObservation {
+    return {
+        files: baseline.files,
+        opaqueDirectories: baseline.opaqueDirectories ?? {},
+    };
+}
+
+/** Hash opaque worktree content without retaining or publishing its Git metadata. */
+async function opaqueDirectoryDigest(
+    root: string,
+    path: string,
+): Promise<string> {
+    const digest = createHash('sha256');
+    digest.update('flue-opaque-directory-v1\0');
+    await digestDirectory(digest, root, path, path);
+    return digest.digest('hex');
+}
+
+async function digestDirectory(
+    digest: Hash,
+    root: string,
+    directory: string,
+    opaqueRoot: string,
+): Promise<void> {
+    const names = (await readdir(join(root, directory)))
+        .filter((name) => name.toLowerCase() !== '.git')
+        .sort();
+    for (const name of names) {
+        const path = `${directory}/${name}`;
+        validatePath(path);
+        const relative = path.slice(opaqueRoot.length + 1);
+        const entry = await lstat(join(root, path));
+        digestField(digest, 'path', relative);
+        digestField(digest, 'mode', String(entry.mode & 0o777));
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+            digestField(digest, 'kind', 'directory');
+            await digestDirectory(digest, root, path, opaqueRoot);
+        } else if (entry.isSymbolicLink()) {
+            digestField(digest, 'kind', 'symlink');
+            digestField(
+                digest,
+                'data',
+                await readlink(join(root, path), { encoding: 'buffer' }),
+            );
+        } else if (entry.isFile()) {
+            digestField(digest, 'kind', 'file');
+            digestField(digest, 'size', String(entry.size));
+            for await (const chunk of createReadStream(join(root, path)))
+                digest.update(chunk);
+        } else {
+            throw new Error(`Unsupported opaque workspace entry: ${path}`);
+        }
+    }
+}
+
+function digestField(
+    digest: Hash,
+    label: string,
+    value: string | Buffer,
+): void {
+    const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    digest.update(`${label}:${bytes.length}:`);
+    digest.update(bytes);
+    digest.update('\0');
+}
+
 function equal(a: unknown, b: unknown): boolean {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 function sortSnapshot(files: Snapshot): Snapshot {
     return Object.fromEntries(
         Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    );
+}
+
+function sortStrings(values: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(
+        Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     );
 }
 function missing(error: unknown): boolean {

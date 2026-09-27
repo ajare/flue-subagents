@@ -33,6 +33,14 @@ manifest entries are rejected. Pre-existing untracked user files also require a
 manifest to modify them. Other untracked files are recorded in the workspace hash
 but never transferred. Ignored generated files are not revision content.
 
+Git reports an untracked embedded repository as one opaque directory rather than
+as individual files. Flue records a deterministic digest of that directory's
+worktree content (excluding nested `.git` administration) in the workspace hash,
+but never treats the directory as a patch entry. The directory and paths beneath
+it cannot appear in the new-file manifest. To vendor such content, remove its
+nested Git metadata so Git exposes ordinary files; generated dependency trees
+should instead be ignored or created outside the workspace.
+
 A supplied revision hash alone is **not** approval: publication also requires
 current, independent ledger review evidence from every reviewer of that revision.
 The CLI gates completion on review and records revisions with an empty new-file
@@ -43,9 +51,9 @@ for a commit or `--commit` is supplied. See [review gating](review-gating.md).
 ## Safety and recovery
 
 Publication requires a completed run, checks the workspace size limit, recalculates
-the exact latest approved revision, and rechecks the original preflight fingerprint
-and raw starting contents. Existing ignored files cannot be overwritten by new-file
-publication. Unsafe paths, symlink parents, special files, and file/directory
+the exact latest approved revision (including opaque-directory observations), and
+rechecks the original preflight fingerprint and raw starting contents. Existing
+ignored files cannot be overwritten by new-file publication. Unsafe paths, symlink parents, special files, and file/directory
 replacement conflicts fail closed. Leaf symlinks are copied, never followed.
 
 A per-checkout `flue-publication.lock` directory excludes cooperating publishers.

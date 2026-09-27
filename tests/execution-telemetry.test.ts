@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { FlueObservation } from '@flue/runtime';
-import { ExecutionTelemetry } from '../src/execution-telemetry.ts';
 import { AgentNames } from '../src/agent-names.ts';
+import { ExecutionTelemetry } from '../src/execution-telemetry.ts';
+import { AgentMetrics } from '../src/metrics.ts';
 
 test('records parallel tasks, model intervals, missing usage and prompt boundaries without content', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'telemetry-'));
@@ -110,6 +111,38 @@ test('records parallel tasks, model intervals, missing usage and prompt boundari
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
+});
+
+test('queued read-only tasks are not reported as concurrently active', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'telemetry-queued-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const metrics = new AgentMetrics('run');
+    const telemetry = new ExecutionTelemetry(
+        join(dir, 'events.jsonl'),
+        'run',
+        'conversation',
+        16,
+        100,
+        undefined,
+        undefined,
+        undefined,
+        metrics,
+    );
+    const emit = (event: object) => telemetry.observe({
+        timestamp: '2026-01-01T00:00:00.000Z',
+        instanceId: 'conversation',
+        ...event,
+    } as FlueObservation);
+
+    emit({ type: 'task_start', taskId: 'a', agent: 'explorer', prompt: 'Objective: A.\nRole task: A.' });
+    emit({ type: 'task_start', taskId: 'b', agent: 'explorer', prompt: 'Objective: B.\nRole task: B.' });
+    emit({ type: 'turn_request', taskId: 'a', turnId: 'turn-a', request: { requestedModel: 'model' } });
+
+    const rendered = metrics.render();
+    assert.match(rendered, /flue_agent_active\{[^\n]*agent_name="explorer-1"[^\n]*\} 1/u);
+    assert.doesNotMatch(rendered, /flue_agent_active\{[^\n]*agent_name="explorer-2"[^\n]*\} 1/u);
+    assert.match(rendered, /flue_agent_index\{[^\n]*agent_name="explorer-1"[^\n]*status="active"[^\n]*\} 2/u);
+    assert.match(rendered, /flue_agent_index\{[^\n]*agent_name="explorer-2"[^\n]*status="queued"[^\n]*\} 3/u);
 });
 
 test('telemetry shares names across prompt continuations and same-role tasks', async (t) => {

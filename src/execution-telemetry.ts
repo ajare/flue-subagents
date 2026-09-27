@@ -1,17 +1,19 @@
-import type { AgentMetrics } from './metrics.ts';
-import { activeResultCorrection } from './result-correction.ts';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { type FlueObservation, observe } from '@flue/runtime';
-import { takeProviderStats } from './provider-stats.ts';
 import { AgentNames } from './agent-names.ts';
+import type { AgentMetrics } from './metrics.ts';
 import { delegationRejection } from './orchestrator-policy.ts';
+import { takeProviderStats } from './provider-stats.ts';
+import { activeResultCorrection } from './result-correction.ts';
 
 interface Span {
     startedAt: string;
     outputTokens: number;
     usageComplete: boolean;
     agent?: string;
+    agentType?: string;
+    metricsStarted?: boolean;
 }
 
 /** Content-free, append-only telemetry. Each dispatch gets its own prompt ID. */
@@ -19,6 +21,7 @@ export class ExecutionTelemetry {
     readonly promptId = randomUUID();
     private tasks = new Map<string, Span>();
     private turns = new Map<string, Span>();
+    private toolCalls = new Map<string, string>();
 
     private path: string;
     private runId: string;
@@ -74,12 +77,24 @@ export class ExecutionTelemetry {
     observe = (event: FlueObservation): void => {
         if (event.instanceId !== this.conversationId) return;
         if (event.type === 'turn_request') {
+            const task = event.taskId
+                ? this.tasks.get(event.taskId)
+                : undefined;
+            if (task && !task.metricsStarted) {
+                this.metrics?.start(
+                    task.agent ?? 'unknown',
+                    task.agentType ?? 'unknown',
+                );
+                task.metricsStarted = true;
+            }
             this.record({
                 type: 'llm_start',
                 ts: Date.parse(event.timestamp),
                 turnId: event.turnId,
                 taskId: event.taskId,
-                agent: event.taskId ? this.tasks.get(event.taskId)?.agent ?? 'unknown' : 'orchestrator',
+                agent: event.taskId
+                    ? (task?.agent ?? 'unknown')
+                    : 'orchestrator',
             });
         }
         if (event.type === 'task_start') {
@@ -99,12 +114,15 @@ export class ExecutionTelemetry {
                 this.onEvent?.(output);
                 return;
             }
-            this.metrics?.start(this.agentNames.get(event.taskId, event.agent), event.agent ?? 'unknown');
+            const agent = this.agentNames.get(event.taskId, event.agent);
+            const agentType = event.agent ?? 'unknown';
+            this.metrics?.queue(agent, agentType);
             this.tasks.set(event.taskId, {
                 startedAt: event.timestamp,
                 outputTokens: 0,
                 usageComplete: true,
-                agent: this.agentNames.get(event.taskId, event.agent),
+                agent,
+                agentType,
             });
             this.record({
                 type: 'subagent_start',
@@ -127,12 +145,18 @@ export class ExecutionTelemetry {
             });
         } else if (event.type === 'turn') {
             const tokens = event.response.usage?.output;
-            this.metrics?.addOutputTokens(
-                event.taskId ? this.tasks.get(event.taskId)?.agent ?? 'unknown' : 'orchestrator',
-                tokens,
-            );
+            const agentName = event.taskId
+                ? this.tasks.get(event.taskId)?.agent ?? 'unknown'
+                : 'orchestrator';
+            this.metrics?.incrementTurns(agentName);
+            this.metrics?.addOutputTokens(agentName, tokens);
             const stopReason = activeResultCorrection.getStore()?.completion?.stopReason ?? event.response.finishReason;
             const stats = takeProviderStats(event.turnId);
+            this.metrics?.setMaxTokensClamped(
+                agentName,
+                stats.timings?.max_tokens_clamped_from,
+                stats.timings?.max_tokens_clamped_to,
+            );
             const usage = event.response.usage;
             // Runtime input excludes cache reads/writes; include them to report
             // the complete input context, not just newly processed tokens.
@@ -146,9 +170,6 @@ export class ExecutionTelemetry {
                 Number.isFinite(inputTokens) && inputTokens >= 0
                 ? inputTokens
                 : null;
-            const agentName = event.taskId
-                ? this.tasks.get(event.taskId)?.agent ?? 'unknown'
-                : 'orchestrator';
             this.metrics?.setContextTokens(agentName, contextTokens ?? undefined);
             const output = {
                 type: 'event',
@@ -195,6 +216,20 @@ export class ExecutionTelemetry {
                 });
                 this.turns.delete(event.turnId);
             }
+        } else if (event.type === 'tool_start') {
+            if (!this.toolCalls.has(event.toolCallId)) {
+                const agentName = event.taskId
+                    ? this.tasks.get(event.taskId)?.agent ?? 'unknown'
+                    : 'orchestrator';
+                this.toolCalls.set(event.toolCallId, agentName);
+                this.metrics?.startToolCall(agentName);
+            }
+        } else if (event.type === 'tool') {
+            const agentName = this.toolCalls.get(event.toolCallId);
+            if (agentName) {
+                this.metrics?.finishToolCall(agentName);
+                this.toolCalls.delete(event.toolCallId);
+            }
         } else if (event.type === 'task') {
             const span = this.tasks.get(event.taskId);
             // Rejected task-tool input never started a specialist span.
@@ -234,7 +269,9 @@ export class ExecutionTelemetry {
                 status: event.isError ? 'failed' : 'completed',
                 ...failure,
             });
-            this.metrics?.finish(span.agent ?? 'unknown', event.isError ? 'failed' : 'completed');
+            const agentName = span.agent ?? 'unknown';
+            this.metrics?.finish(agentName, event.isError ? 'failed' : 'completed');
+            this.clearToolCalls(agentName);
             this.tasks.delete(event.taskId);
         }
     };
@@ -265,6 +302,13 @@ export class ExecutionTelemetry {
         this.record({ type: 'prompt_end', timestamp: endedAt, status });
         this.tasks.clear();
         this.turns.clear();
+        this.toolCalls.clear();
+    }
+
+    private clearToolCalls(agentName: string): void {
+        for (const [toolCallId, owner] of this.toolCalls) {
+            if (owner === agentName) this.toolCalls.delete(toolCallId);
+        }
     }
 }
 

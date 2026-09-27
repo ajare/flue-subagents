@@ -48,24 +48,41 @@ All series have `run_id`, `agent_name` (e.g. `explorer-1`), and `agent_type`
 (e.g. `explorer`) labels, including the `orchestrator`:
 
 - `flue_agent_active`: gauge, 1 while executing, 0 after completion.
+- `flue_agent_tool_calls_active`: gauge counting tool calls currently active for
+  the agent; parallel calls can make this greater than 1.
 - `flue_agent_index`: gauge containing the agent's one-based creation index
-  (orchestrator 1, then 2, 3, and so on); emitted only while that agent runs.
+  (orchestrator 1, then 2, 3, and so on), with `status="queued"` before gate
+  admission and `status="active"` while executing; removed when the agent stops.
 - `flue_agent_status`: separate one-hot gauge with a `status` label:
   `running`, `completed`, `failed`, or `interrupted`.
 - `flue_agent_context_tokens`: gauge containing the latest reported input
   context (prompt) size for the agent, including cached tokens.
 - `flue_agent_output_tokens_total`: counter of reported output tokens;
   missing provider usage is not estimated.
+- `flue_agent_last_turn_output_tokens`: gauge containing the reported output-token
+  count for the latest completed model turn.
+- `flue_agent_turns_total`: counter of model turns observed for the agent,
+  including turns whose response reports an error.
+- `flue_agent_max_tokens_clamped_from`: gauge containing the latest provider-reported
+  requested output-token limit before clamping.
+- `flue_agent_max_tokens_clamped_to`: gauge containing the latest provider-reported
+  output-token limit after clamping.
 
-The context gauge appears after an agent's first turn with valid provider usage
-and retains the latest valid value when later usage is unavailable. Agents
-appear when execution starts, not while queued. Terminal agents remain
-visible until endpoint shutdown except for `flue_agent_index`, whose series is
-removed when its agent stops. Status describes execution, not review approval
-or the final run outcome. Metrics cover this invocation only (not historical
+The context and output-token clamp gauges appear after an agent's first turn with
+those provider statistics and retain the latest valid values when later statistics
+are unavailable. The last-turn output gauge is omitted until a completed turn reports
+valid usage, and is removed if the next completed turn has no valid output count.
+Queued agents
+have `status="queued"` in `flue_agent_index`; `flue_agent_active` remains 0 until
+execution starts. Terminal agents remain visible until endpoint shutdown except for
+`flue_agent_index`, whose series is removed when its agent stops. Status describes
+execution, not review approval or the final run outcome. Metrics cover this invocation only (not historical
 runs), contain no prompt/output content, and reset on process restart/resume.
-Choose a scrape interval appropriate for short-lived agents; a scrape can miss
-an entire short run. Per-agent names create new time series for each delegation.
+Tool-call activity begins at `tool_start` and ends when Flue commits the terminal
+`tool` event, which can be slightly later than execution itself. It resets when the
+agent terminates. Choose a scrape interval appropriate for short-lived agents; a
+scrape can miss an entire short run. Per-agent names create new time series for each
+delegation.
 
 ## Run
 

@@ -191,6 +191,44 @@ test('stable hashes, revision history, manifest ordering, and mutation invalidat
     assert.equal(restored.diffHash, first.diffHash);
 });
 
+test('opaque embedded repositories are revision-bound but not publishable', async (t) => {
+    const { repo, patches, workspace, run, workspaces } = await fixture(t);
+    const dependency = join(workspace, 'build-output/dependency');
+    await mkdir(dependency, { recursive: true });
+    await repo.git('-C', dependency, 'init', '--template=');
+    await writeFile(join(dependency, 'source.cpp'), 'first');
+
+    const first = await patches.capture(run.id);
+    assert.deepEqual(first.changes, []);
+
+    await writeFile(join(dependency, 'source.cpp'), 'second');
+    const second = await patches.capture(run.id);
+    assert.deepEqual(second.changes, []);
+    assert.notEqual(second.workspaceHash, first.workspaceHash);
+    assert.notEqual(second.revisionHash, first.revisionHash);
+
+    await assert.rejects(
+        patches.capture(run.id, ['build-output/dependency']),
+        /non-publishable opaque directory/u,
+    );
+    await assert.rejects(
+        patches.capture(run.id, ['build-output/dependency/source.cpp']),
+        /non-publishable opaque directory/u,
+    );
+
+    await writeFile(join(workspace, 'README.md'), 'publish me');
+    const publishable = await patches.capture(run.id);
+    await approveAndComplete(workspaces, run.id);
+    await patches.publish(run.id, publishable.revisionHash);
+    assert.equal(
+        await readFile(join(repo.path, 'README.md'), 'utf8'),
+        'publish me',
+    );
+    await assert.rejects(lstat(join(repo.path, 'build-output')), {
+        code: 'ENOENT',
+    });
+});
+
 test('publishes exact binary, modes, deletes and manifested new files, preserving dirty index', async (t) => {
     const { repo, baseline, patches, workspace, run, workspaces, store } =
         await fixture(t, true);
