@@ -14,6 +14,8 @@ import {
     type AgentConfiguration,
     DEFAULT_CONFIGURATION,
     restrictedAgentEnvironment,
+    subagentConfiguration,
+    type SubagentRole,
 } from '../config.ts';
 import { readOnlyLocal } from '../sandboxes/read-only-local.ts';
 import { explorer } from '../subagents/explorer.ts';
@@ -183,7 +185,8 @@ function renderOrchestrator(
                   autoCompactionPercent,
               );
     useModel(configuration.model, {
-        ...(configuration.reasoningEffort === 'off'
+        ...(configuration.reasoningEffort === 'off' ||
+        configuration.reasoningEffort === 'default'
             ? {}
             : { thinkingLevel: configuration.reasoningEffort }),
         ...(reserveTokens === undefined
@@ -194,10 +197,22 @@ function renderOrchestrator(
     useSandbox(sandbox ?? readOnlyLocal(cwd, environment));
 
     useTool(readGitHubIssue);
-    useSubagent(explorer);
-    useSubagent(planner);
-    useSubagent(implementer);
-    useSubagent(reviewer);
+    for (const definition of [explorer, planner, implementer, reviewer]) {
+        const role = definition.name as SubagentRole;
+        if (!configuration.subagents?.[role]) {
+            useSubagent(definition);
+            continue;
+        }
+        const settings = subagentConfiguration(configuration, role);
+        useSubagent({
+            ...definition,
+            model: settings.model,
+            ...(settings.reasoningEffort === 'off' ||
+            settings.reasoningEffort === 'default'
+                ? {}
+                : { thinkingLevel: settings.reasoningEffort }),
+        });
+    }
     useStructuredResult();
 
     return ORCHESTRATOR_POLICY;
@@ -210,6 +225,8 @@ export function autoCompactionReserveTokens(
     if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
         throw new RangeError('contextWindow must be a positive integer');
     if (!Number.isFinite(percentage) || percentage <= 0 || percentage >= 100)
-        throw new RangeError('percentage must be greater than 0 and less than 100');
+        throw new RangeError(
+            'percentage must be greater than 0 and less than 100',
+        );
     return contextWindow - Math.floor((contextWindow * percentage) / 100);
 }

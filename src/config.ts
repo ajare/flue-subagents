@@ -3,9 +3,48 @@ import { join } from 'node:path';
 
 import type { ThinkingLevel } from '@earendil-works/pi-ai';
 
-export type ReasoningEffort = 'off' | ThinkingLevel;
+export type ReasoningEffort = 'off' | 'default' | ThinkingLevel;
+
+/** Store credential references only, never API key values. */
+export type ModelCredentials =
+    | { type: 'local' }
+    | { type: 'apiKey'; apiKeyEnv: string };
+
+export const SUBAGENT_ROLES = [
+    'explorer',
+    'planner',
+    'implementer',
+    'reviewer',
+] as const;
+export type SubagentRole = (typeof SUBAGENT_ROLES)[number];
+export type ModelConfiguration = Pick<
+    AgentConfiguration,
+    | 'model'
+    | 'endpoint'
+    | 'contextWindow'
+    | 'maxOutputTokens'
+    | 'reasoningEffort'
+    | 'credentials'
+    | 'openRouterProviders'
+>;
+export type SubagentConfigurations = Partial<
+    Record<SubagentRole, Partial<ModelConfiguration>>
+>;
+const MODEL_KEYS = [
+    'model',
+    'endpoint',
+    'contextWindow',
+    'maxOutputTokens',
+    'reasoningEffort',
+    'credentials',
+    'openRouterProviders',
+];
 
 export interface AgentConfiguration {
+    subagents?: SubagentConfigurations;
+    credentials?: ModelCredentials;
+    /** OpenRouter provider allowlist; fallback routing is disabled when set. */
+    openRouterProviders?: readonly string[];
     model: string;
     endpoint: string;
     contextWindow: number;
@@ -27,8 +66,19 @@ export interface AgentConfiguration {
 
 /** Values accepted from CLI adapters and project configuration files. */
 export type AgentConfigurationInput = Partial<{
-    [Key in keyof AgentConfiguration]: AgentConfiguration[Key] | string;
-}>;
+    [Key in keyof Omit<
+        AgentConfiguration,
+        'subagents' | 'credentials' | 'openRouterProviders'
+    >]: AgentConfiguration[Key] | string;
+}> & {
+    models?: Record<string, Partial<ModelConfiguration>>;
+    orchestrator?: string;
+    subagents?: Partial<
+        Record<SubagentRole, string | Partial<ModelConfiguration>>
+    >;
+    credentials?: ModelCredentials;
+    openRouterProviders?: readonly string[];
+};
 
 export const DEFAULT_CONFIGURATION: Readonly<AgentConfiguration> =
     Object.freeze({
@@ -58,7 +108,15 @@ const CONFIGURATION_KEYS = Object.keys(DEFAULT_CONFIGURATION) as Array<
     keyof AgentConfiguration
 >;
 
-const ENVIRONMENT_KEYS: Readonly<Record<keyof AgentConfiguration, string>> = {
+const ENVIRONMENT_KEYS: Readonly<
+    Record<
+        keyof Omit<
+            AgentConfiguration,
+            'subagents' | 'credentials' | 'openRouterProviders'
+        >,
+        string
+    >
+> = {
     model: 'FLUE_AGENT_MODEL',
     endpoint: 'FLUE_AGENT_ENDPOINT',
     contextWindow: 'FLUE_AGENT_CONTEXT_WINDOW',
@@ -130,6 +188,7 @@ export async function resolveConfiguration(
         (await loadProjectConfiguration(
             options.configPath ??
                 join(options.cwd ?? process.cwd(), PROJECT_CONFIGURATION_FILE),
+            options.configPath !== undefined,
         ));
 
     return resolveConfigurationSources({
@@ -163,12 +222,13 @@ export function resolveConfigurationSources(sources: {
 
 export async function loadProjectConfiguration(
     path: string,
+    required = false,
 ): Promise<AgentConfigurationInput> {
     let source: string;
     try {
         source = await readFile(path, 'utf8');
     } catch (error) {
-        if (isNodeError(error) && error.code === 'ENOENT') {
+        if (!required && isNodeError(error) && error.code === 'ENOENT') {
             return {};
         }
         throw new ConfigurationError(
@@ -226,6 +286,12 @@ function inputFromEnvironment(
 ): Partial<AgentConfiguration> {
     const input: Record<string, string> = {};
     for (const key of CONFIGURATION_KEYS) {
+        if (
+            key === 'subagents' ||
+            key === 'credentials' ||
+            key === 'openRouterProviders'
+        )
+            continue;
         const environmentKey = ENVIRONMENT_KEYS[key];
         const value = environment[environmentKey];
         if (value !== undefined) {
@@ -243,11 +309,36 @@ function normalizeInput(
         throw new ConfigurationError(`${source} must be an object`);
     }
 
+    const expanded = expandModelReferences(input, source);
     const normalized: Record<
         string,
         AgentConfiguration[keyof AgentConfiguration]
     > = {};
-    for (const [key, value] of Object.entries(input)) {
+    for (const [key, value] of Object.entries(expanded)) {
+        if (key === 'openRouterProviders') {
+            if (
+                !Array.isArray(value) ||
+                value.length === 0 ||
+                value.some(
+                    (item) =>
+                        typeof item !== 'string' ||
+                        !/^[A-Za-z0-9_-]+$/.test(item),
+                )
+            )
+                throw new ConfigurationError(
+                    `${source}.openRouterProviders must be a non-empty list of provider slugs`,
+                );
+            normalized[key] = Object.freeze([...value]);
+            continue;
+        }
+        if (key === 'credentials') {
+            normalized[key] = normalizeCredentials(value, source);
+            continue;
+        }
+        if (key === 'subagents') {
+            normalized[key] = normalizeSubagents(value, source);
+            continue;
+        }
         if (!CONFIGURATION_KEYS.includes(key as keyof AgentConfiguration)) {
             throw new ConfigurationError(`Unknown ${source} option: ${key}`);
         }
@@ -279,6 +370,7 @@ function parseValue(
                 typeof value !== 'string' ||
                 ![
                     'off',
+                    'default',
                     'minimal',
                     'low',
                     'medium',
@@ -290,7 +382,7 @@ function parseValue(
                 throw invalid(
                     key,
                     source,
-                    'must be off, minimal, low, medium, high, xhigh, or max',
+                    'must be off, default, minimal, low, medium, high, xhigh, or max',
                 );
             }
             return value as ReasoningEffort;
@@ -353,7 +445,150 @@ function validateConfiguration(
         );
     }
 
+    if (configuration.subagents) {
+        for (const settings of Object.values(configuration.subagents)) {
+            validateConfiguration({
+                ...configuration,
+                ...settings,
+                subagents: undefined,
+            });
+        }
+    }
     return Object.freeze({ ...configuration });
+}
+
+function normalizeCredentials(
+    value: unknown,
+    source: string,
+): ModelCredentials {
+    if (!isRecord(value))
+        throw new ConfigurationError(`${source}.credentials must be an object`);
+    if (value.type === 'local' && Object.keys(value).length === 1)
+        return Object.freeze({ type: 'local' });
+    if (
+        value.type === 'apiKey' &&
+        Object.keys(value).length === 2 &&
+        typeof value.apiKeyEnv === 'string' &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.apiKeyEnv)
+    ) {
+        if (
+            (AGENT_ENVIRONMENT_ALLOWLIST as readonly string[]).includes(
+                value.apiKeyEnv,
+            )
+        )
+            throw new ConfigurationError(
+                'Credential environment variables must not be sandbox-allowlisted',
+            );
+        return Object.freeze({ type: 'apiKey', apiKeyEnv: value.apiKeyEnv });
+    }
+    throw new ConfigurationError(
+        `${source}.credentials must be { type: "local" } or { type: "apiKey", apiKeyEnv: "ENV_VARIABLE" }; literal API keys are not supported`,
+    );
+}
+
+function expandModelReferences(
+    input: Record<string, unknown>,
+    source: string,
+): Record<string, unknown> {
+    const definitions = new Map<string, Partial<ModelConfiguration>>();
+    if ('models' in input) {
+        if (!isRecord(input.models))
+            throw new ConfigurationError(`${source}.models must be an object`);
+        for (const [name, settings] of Object.entries(input.models)) {
+            if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name))
+                throw new ConfigurationError(
+                    `Invalid model definition name: ${name}`,
+                );
+            const definition = normalizeModelSettings(
+                settings,
+                `${source}.models.${name}`,
+            );
+            validateConfiguration({ ...DEFAULT_CONFIGURATION, ...definition });
+            definitions.set(name, definition);
+        }
+    }
+    const resolve = (
+        reference: unknown,
+        path: string,
+    ): Partial<ModelConfiguration> => {
+        if (typeof reference !== 'string' || reference.length === 0)
+            throw new ConfigurationError(
+                `${path} must reference a model definition by name`,
+            );
+        const definition = definitions.get(reference);
+        if (!definition)
+            throw new ConfigurationError(
+                `Unknown model definition ${reference} referenced by ${path}`,
+            );
+        return { ...definition };
+    };
+    const expanded = { ...input };
+    delete expanded.models;
+    delete expanded.orchestrator;
+    if ('orchestrator' in input) {
+        if (MODEL_KEYS.some((key) => key in input))
+            throw new ConfigurationError(
+                'Named orchestrator configuration cannot be combined with inline model settings',
+            );
+        Object.assign(
+            expanded,
+            resolve(input.orchestrator, `${source}.orchestrator`),
+        );
+    }
+    if (isRecord(input.subagents)) {
+        expanded.subagents = Object.fromEntries(
+            Object.entries(input.subagents).map(([role, settings]) => [
+                role,
+                typeof settings === 'string'
+                    ? resolve(settings, `${source}.subagents.${role}`)
+                    : settings,
+            ]),
+        );
+    }
+    return expanded;
+}
+
+function normalizeModelSettings(
+    value: unknown,
+    source: string,
+): Partial<ModelConfiguration> {
+    if (!isRecord(value))
+        throw new ConfigurationError(`${source} must be an object`);
+    for (const key of Object.keys(value)) {
+        if (!MODEL_KEYS.includes(key))
+            throw new ConfigurationError(`Unknown ${source} option: ${key}`);
+    }
+    return Object.freeze(normalizeInput(value, source));
+}
+
+function normalizeSubagents(
+    value: unknown,
+    source: string,
+): SubagentConfigurations {
+    if (!isRecord(value))
+        throw new ConfigurationError(`${source}.subagents must be an object`);
+    const result: SubagentConfigurations = {};
+    for (const [role, settings] of Object.entries(value)) {
+        if (!SUBAGENT_ROLES.includes(role as SubagentRole))
+            throw new ConfigurationError(`Unknown subagent role: ${role}`);
+        result[role as SubagentRole] = normalizeModelSettings(
+            settings,
+            `${source}.subagents.${role}`,
+        );
+    }
+    return Object.freeze(result);
+}
+
+/** Give each configured role a distinct provider namespace, even for identical model IDs. */
+export function subagentConfiguration(
+    configuration: AgentConfiguration,
+    role: SubagentRole,
+): AgentConfiguration {
+    const settings = configuration.subagents?.[role];
+    if (!settings) return configuration;
+    const resolved = { ...configuration, ...settings, subagents: undefined };
+    const modelId = resolved.model.slice(resolved.model.indexOf('/') + 1);
+    return { ...resolved, model: `flue-${role}/${modelId}` };
 }
 
 function parseInteger(

@@ -1,12 +1,17 @@
-import { createProvider, type Provider } from '@earendil-works/pi-ai';
+import {
+    createProvider,
+    type Provider,
+    type StreamOptions,
+} from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 
-import type { AgentConfiguration } from './config.ts';
+import { type AgentConfiguration, ConfigurationError } from './config.ts';
 import { statsFetch } from './provider-stats.ts';
 
 export interface ConnectivityCheckOptions {
     fetch?: typeof globalThis.fetch;
     signal?: AbortSignal;
+    env?: NodeJS.ProcessEnv;
 }
 
 export interface ProviderModelMetadata {
@@ -28,9 +33,24 @@ export class InfrastructureError extends Error {
 /** Build the OpenAI-compatible provider selected by the effective config. */
 export function createModelProvider(
     configuration: AgentConfiguration,
+    env: NodeJS.ProcessEnv = process.env,
 ): Provider {
     const { providerId, modelId } = splitModelSpecifier(configuration.model);
     const api = openAICompletionsApi();
+    const isOpenRouter =
+        new URL(configuration.endpoint).hostname === 'openrouter.ai';
+    const onPayload =
+        (callback: StreamOptions['onPayload']): StreamOptions['onPayload'] =>
+        async (payload, model) => {
+            if (
+                configuration.reasoningEffort === 'default' &&
+                isRecord(payload)
+            ) {
+                delete payload.reasoning_effort;
+                if (isOpenRouter) payload.reasoning = { enabled: true };
+            }
+            return (await callback?.(payload, model)) ?? payload;
+        };
 
     return createProvider({
         id: providerId,
@@ -38,7 +58,9 @@ export function createModelProvider(
         auth: {
             apiKey: {
                 name: `${providerId} OpenAI-compatible endpoint`,
-                resolve: async () => ({ auth: { apiKey: 'local' } }),
+                resolve: async () => ({
+                    auth: { apiKey: resolveApiKey(configuration, env) },
+                }),
             },
         },
         models: [
@@ -53,14 +75,32 @@ export function createModelProvider(
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
                 contextWindow: configuration.contextWindow,
                 maxTokens: configuration.maxOutputTokens,
+                ...(isOpenRouter && configuration.openRouterProviders
+                    ? {
+                          compat: {
+                              openRouterRouting: {
+                                  only: [...configuration.openRouterProviders],
+                                  allow_fallbacks: false,
+                              },
+                          },
+                      }
+                    : {}),
             },
         ],
         api: {
             stream(model, context, options) {
-                return api.stream(model, context, { ...options, fetch: statsFetch(options?.fetch) });
+                return api.stream(model, context, {
+                    ...options,
+                    fetch: statsFetch(options?.fetch),
+                    onPayload: onPayload(options?.onPayload),
+                });
             },
             streamSimple(model, context, options) {
-                return api.streamSimple(model, context, { ...options, fetch: statsFetch(options?.fetch) });
+                return api.streamSimple(model, context, {
+                    ...options,
+                    fetch: statsFetch(options?.fetch),
+                    onPayload: onPayload(options?.onPayload),
+                });
             },
         },
     });
@@ -74,6 +114,7 @@ export async function checkModelConnectivity(
     configuration: AgentConfiguration,
     options: ConnectivityCheckOptions = {},
 ): Promise<ProviderModelMetadata | void> {
+    const apiKey = resolveApiKey(configuration, options.env ?? process.env);
     const fetchImplementation = options.fetch ?? globalThis.fetch;
     const modelsUrl = `${withoutTrailingSlash(configuration.endpoint)}/models`;
     const timeoutController = new AbortController();
@@ -90,7 +131,7 @@ export async function checkModelConnectivity(
         const response = await fetchImplementation(modelsUrl, {
             method: 'GET',
             headers: {
-                authorization: 'Bearer local',
+                authorization: `Bearer ${apiKey}`,
                 accept: 'application/json',
             },
             signal,
@@ -121,6 +162,25 @@ export async function checkModelConnectivity(
     } finally {
         clearTimeout(timeout);
     }
+}
+
+/** Resolve on demand so saved configurations never contain secret values. */
+export function resolveApiKey(
+    configuration: AgentConfiguration,
+    env: NodeJS.ProcessEnv = process.env,
+): string {
+    const credentials = configuration.credentials;
+    if (!credentials || credentials.type === 'local') return 'local';
+    const value = env[credentials.apiKeyEnv];
+    if (!value || value.trim() === '')
+        throw new ConfigurationError(
+            `API key environment variable ${credentials.apiKeyEnv} is missing or empty`,
+        );
+    if (/[\r\n]/.test(value))
+        throw new ConfigurationError(
+            `API key environment variable ${credentials.apiKeyEnv} contains invalid line breaks`,
+        );
+    return value;
 }
 
 export function splitModelSpecifier(specifier: string): {
@@ -154,11 +214,12 @@ function providerModelMetadata(
             normalizedId.endsWith(normalizedModelId)
         );
     });
-    const model = matches.length === 1
-        ? matches[0]
-        : models.length === 1
-            ? models[0]
-            : undefined;
+    const model =
+        matches.length === 1
+            ? matches[0]
+            : models.length === 1
+              ? models[0]
+              : undefined;
     const cap = model?.max_tokens_cap;
     return Number.isSafeInteger(cap) && (cap as number) > 0
         ? { maxOutputTokens: cap as number }

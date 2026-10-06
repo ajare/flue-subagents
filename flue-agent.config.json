@@ -1,0 +1,31 @@
+{
+    "models": {
+        "openrouter-sol": {
+            "model": "openrouter/openai/gpt-6.1-sol",
+            "endpoint": "https://openrouter.ai/api/v1",
+            "contextWindow": 262144,
+            "maxOutputTokens": 65536,
+            "reasoningEffort": "default",
+            "credentials": {
+                "type": "apiKey",
+                "apiKeyEnv": "OPENROUTER_API_KEY"
+            },
+            "openRouterProviders": ["openai"]
+        },
+        "local-qwen": {
+            "model": "halogen/qwen-3.8-flash-next",
+            "endpoint": "http://localhost:8731/v1",
+            "contextWindow": 262144,
+            "maxOutputTokens": 65536,
+            "reasoningEffort": "high",
+            "credentials": { "type": "local" }
+        }
+    },
+    "orchestrator": "openrouter-sol",
+    "subagents": {
+        "explorer": "local-qwen",
+        "planner": "local-qwen",
+        "implementer": "local-qwen",
+        "reviewer": "local-qwen"
+    }
+}

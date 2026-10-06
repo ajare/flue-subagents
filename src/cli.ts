@@ -28,6 +28,8 @@ import {
 import {
     type AgentConfiguration,
     resolveConfiguration,
+    subagentConfiguration,
+    SUBAGENT_ROLES,
     restrictedAgentEnvironment,
 } from './config.ts';
 import {
@@ -101,6 +103,7 @@ export class CliUsageError extends Error {
 
 interface ParsedArguments {
     action: 'execute' | 'help' | 'version';
+    configPath?: string;
     repo: string;
     prompt?: string;
     allowDirty: boolean;
@@ -122,6 +125,7 @@ Submit one engineering objective for autonomous execution.
 Options:
   --json         Emit NDJSON events and a final JSON report
   --repo <path>  Repository to operate on (default: current directory)
+  --config <path> Use this configuration file instead of flue-agent.config.json
   --allow-dirty  Permit and fingerprint staged, unstaged, and untracked changes
   --commit       Commit the approved published patch (hooks run normally)
   --fail-fast    End the run when any sub-agent fails (default: off)
@@ -140,6 +144,7 @@ export function parseCliArguments(
     cwd = process.cwd(),
 ): ParsedArguments {
     let repo = cwd;
+    let configPath: string | undefined;
     let prompt: string | undefined;
     let allowDirty = false;
     let commit = false;
@@ -205,6 +210,19 @@ export function parseCliArguments(
             );
             continue;
         }
+        if (
+            !positionalOnly &&
+            (argument === '--config' || argument.startsWith('--config='))
+        ) {
+            const value =
+                argument === '--config'
+                    ? argv[++index]
+                    : argument.slice('--config='.length);
+            if (!value || value.startsWith('--'))
+                throw new CliUsageError('--config requires a path');
+            configPath = resolve(cwd, value);
+            continue;
+        }
         if (!positionalOnly && argument === '--repo') {
             const value = argv[index + 1];
             if (value === undefined || value === '') {
@@ -233,6 +251,7 @@ export function parseCliArguments(
 
     return {
         action: 'execute',
+        configPath,
         repo,
         prompt,
         allowDirty,
@@ -248,6 +267,7 @@ export function parseCliArguments(
  */
 export async function createExecutionRequest(options: {
     repo: string;
+    configPath?: string;
     prompt: string;
     env?: NodeJS.ProcessEnv;
     allowDirty?: boolean;
@@ -283,6 +303,7 @@ export async function createExecutionRequest(options: {
     repository = repositoryState.repository.root;
     const configuration = await resolveConfiguration({
         cwd: repository,
+        configPath: options.configPath,
         env: options.env,
     });
     return {
@@ -316,8 +337,9 @@ export async function runCli(
                             !['type', 'sequence', 'runId'].includes(key) &&
                             value !== undefined,
                     )
-                    .map(([key, value]) =>
-                        `${key}: ${key === 'ts' && typeof value === 'number' ? new Date(value).toISOString() : typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)}`,
+                    .map(
+                        ([key, value]) =>
+                            `${key}: ${key === 'ts' && typeof value === 'number' ? new Date(value).toISOString() : typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)}`,
                     )
                     .join(' | ')}\n`,
             );
@@ -336,15 +358,24 @@ export async function runCli(
     try {
         consoleLog = new ConsoleLog(store.root);
     } catch (error) {
-        (dependencies.stderr ?? process.stderr).write(`flue-agent: cannot create console logs: ${errorMessage(error)}\n`);
+        (dependencies.stderr ?? process.stderr).write(
+            `flue-agent: cannot create console logs: ${errorMessage(error)}\n`,
+        );
         return 1;
     }
-    const stdout = consoleLog.tee('stdout', dependencies.stdout ?? process.stdout);
-    const stderr = consoleLog.tee('stderr', dependencies.stderr ?? process.stderr);
+    const stdout = consoleLog.tee(
+        'stdout',
+        dependencies.stdout ?? process.stdout,
+    );
+    const stderr = consoleLog.tee(
+        'stderr',
+        dependencies.stderr ?? process.stderr,
+    );
     const executionOptions: RunExecutionOptions = {
         store,
         modelTransport: dependencies.modelTransport,
         metricsEnv: dependencies.env,
+        credentialEnv: dependencies.env,
         onReport: (report) => {
             consoleLog.attachRun(store.runDirectory(report.id));
             finalReport = report;
@@ -445,6 +476,7 @@ export async function runCli(
             (await readCompleteInput(dependencies.stdin ?? process.stdin));
         const request = await createExecutionRequest({
             repo: parsed.repo,
+            configPath: parsed.configPath,
             prompt: input,
             env: dependencies.env,
             allowDirty: parsed.allowDirty,
@@ -473,6 +505,8 @@ export async function runCli(
 export interface RunExecutionOptions {
     /** FLUE_METRICS_PORT enables a loopback Prometheus endpoint during execution. */
     metricsEnv?: NodeJS.ProcessEnv;
+    /** Host secrets are used by transport only, never saved or passed to sandboxes. */
+    credentialEnv?: NodeJS.ProcessEnv;
     /** Embedded callers/tests may replace only the model transport. */
     modelTransport?: {
         check: typeof checkModelConnectivity;
@@ -542,10 +576,13 @@ export async function executeRequest(
     };
     const removeSignals = cancellationSignals(controller);
     const metrics = new AgentMetrics(run.id);
-    let metricsServer: Awaited<ReturnType<typeof startMetricsServer>> | undefined;
+    let metricsServer:
+        | Awaited<ReturnType<typeof startMetricsServer>>
+        | undefined;
     try {
         signal.throwIfAborted();
-        if (port !== undefined) metricsServer = await startMetricsServer(metrics, port);
+        if (port !== undefined)
+            metricsServer = await startMetricsServer(metrics, port);
         if (existing) {
             await rm(join(store.runDirectory(run.id), 'resume.json'));
             await store.update(run.id, { status: 'running' });
@@ -557,8 +594,19 @@ export async function executeRequest(
             await patches.initialize(run.id, request.repositoryState);
         const providerMetadata = await (
             options.modelTransport?.check ?? checkModelConnectivity
-        )(request.configuration, { signal });
-        const agentNames = new AgentNames(join(store.runDirectory(run.id), 'agent-names.json'));
+        )(request.configuration, { signal, env: options.credentialEnv });
+        const specialistConfigurations = SUBAGENT_ROLES.filter(
+            (role) => request.configuration.subagents?.[role] !== undefined,
+        ).map((role) => subagentConfiguration(request.configuration, role));
+        for (const configuration of specialistConfigurations) {
+            await (options.modelTransport?.check ?? checkModelConnectivity)(
+                configuration,
+                { signal, env: options.credentialEnv },
+            );
+        }
+        const agentNames = new AgentNames(
+            join(store.runDirectory(run.id), 'agent-names.json'),
+        );
         // Seed legacy runs too, so resuming never restarts a role's numbering.
         for (const { action } of run.ledger) {
             if (action.type === 'start') agentNames.get(action.id, action.role);
@@ -606,6 +654,13 @@ export async function executeRequest(
             providers: [
                 (options.modelTransport?.create ?? createModelProvider)(
                     request.configuration,
+                    options.credentialEnv,
+                ),
+                ...specialistConfigurations.map((configuration) =>
+                    (options.modelTransport?.create ?? createModelProvider)(
+                        configuration,
+                        options.credentialEnv,
+                    ),
                 ),
             ],
         });
