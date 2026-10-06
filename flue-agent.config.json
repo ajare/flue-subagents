@@ -23,9 +23,9 @@
     },
     "orchestrator": "openrouter-sol",
     "subagents": {
-        "explorer": "local-qwen",
-        "planner": "local-qwen",
-        "implementer": "local-qwen",
-        "reviewer": "local-qwen"
+        "explorer": "openrouter-sol",
+        "planner": "openrouter-sol",
+        "implementer": "openrouter-sol",
+        "reviewer": "openrouter-sol"
     }
 }

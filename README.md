@@ -24,13 +24,50 @@ export FLUE_AGENT_ENDPOINT=http://localhost:8731/v1
 export FLUE_AGENT_MODEL=halogen/qwen-3.8-flash-next
 ```
 
-Without `npm link`, replace `flue-agent` with `node /absolute/path/to/src/cli.ts`.
-This is a source installation, not a published package or compiled distribution.
-The current provider sends the fixed API key `local`; endpoints requiring other
-credentials are not supported by configuration. Model execution may incur costs.
+`npm link` is optional; see below to run directly from the checkout without
+installing a global command. This is a source distribution, not a published
+package or compiled distribution. Model execution may incur costs.
 See [configuration](docs/configuration.md) for project JSON, environment overrides,
 context/output limits, timeouts, concurrency, and budgets. Configuration is read
 from the target repository, not necessarily the agent's installation directory.
+
+## Run locally without installing the CLI
+
+With Node **>=22.19.0** and Git available, install dependencies in this checkout
+once (skip this if you already ran `npm ci` above). No `npm link`, global npm
+installation, TypeScript compilation, or container is required:
+
+```sh
+cd /path/to/flue-subagents
+npm ci
+export FLUE_AGENT_ENDPOINT=http://localhost:8731/v1
+export FLUE_AGENT_MODEL=halogen/qwen-3.8-flash-next
+
+node src/cli.ts --repo /path/to/trusted/repo \
+  "Explain the architecture and test workflow. Do not modify files or create commits."
+```
+
+Supply your task as one quoted prompt, and use `--repo` to select a trusted Git
+checkout. Without `--repo`, the CLI targets your current working directory.
+The model server must be running and reachable. Configuration is loaded from
+the target repository; explicit specialist model settings can override shared
+environment settings. See [configuration](docs/configuration.md) for endpoint
+and API-key configuration.
+
+From another directory, use the absolute path to the CLI. All CLI options and
+management commands work the same way:
+
+```sh
+node /path/to/flue-subagents/src/cli.ts --repo /path/to/trusted/repo --json \
+  "Fix the parser bug and add regression tests. Do not create a commit."
+printf '%s' 'Explain the parser architecture' | \
+  node /path/to/flue-subagents/src/cli.ts --repo /path/to/trusted/repo
+node /path/to/flue-subagents/src/cli.ts list
+node /path/to/flue-subagents/src/cli.ts resume <run-id> "Answer to the clarification"
+```
+
+In the examples below, replace `flue-agent` with
+`node /path/to/flue-subagents/src/cli.ts` when using this method.
 
 ## Prometheus metrics
 
