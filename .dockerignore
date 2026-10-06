@@ -1,0 +1,7 @@
+# Only application sources and dependency manifests enter the build context.
+# In particular, never send .git, .env, run artifacts or local model config.
+*
+!package.json
+!package-lock.json
+!src/
+!src/**

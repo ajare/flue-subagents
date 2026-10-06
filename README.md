@@ -7,7 +7,8 @@ independent review, and Git-worktree publication.
 > Worktrees and role tool restrictions are not a security sandbox. Model-driven
 > commands and repository tests run on your host with your user permissions.
 > Do not run this against untrusted code or where sensitive host data is accessible.
-> Container isolation is deferred; see [security limitations](docs/security.md).
+> Hardened isolation is deferred; see [security limitations](docs/security.md).
+For container packaging and startup commands, see [Podman](docs/podman.md).
 
 ## Install and configure
 
@@ -85,6 +86,9 @@ scrape can miss an entire short run. Per-agent names create new time series for 
 delegation.
 
 ## Run
+
+To bind-mount a repository into the packaged application and supply a startup
+prompt, see the [Podman build and run guide](docs/podman.md).
 
 See the [prompt examples guide](docs/prompt-examples.md) for repository questions,
 bug fixes, features, refactors, reviews, commits, and clarification workflows.

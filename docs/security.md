@@ -27,7 +27,10 @@ isolation for an untrusted evaluation.
 
 ## Deferred work
 
-Container/OS-enforced isolation is explicitly deferred beyond the MVP. Future
+The [Podman image](podman.md) packages the CLI for trusted workloads; it is not
+an adversarial-code sandbox. With Podman, commands execute inside the container,
+but can still read and modify writable host mounts and access the network.
+Hardened container/OS-enforced isolation is deferred beyond the MVP. Future
 work should cover filesystem mounts excluding host secrets and original checkout,
 network/egress policy, non-root execution, process/resource limits, credential
 brokerage, Git metadata isolation, and a narrowly authorized publication boundary.
